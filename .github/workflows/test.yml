@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: System tools the OCR worker shells out to
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+
+      - name: Python extras (Pillow draws the synthetic samples)
+        run: python3 -m pip install --quiet pillow
+
+      - name: Generate OCR fixtures (synthetic, never committed)
+        run: python3 services/ocr/samples/make_samples.py
+
+      - name: Tests
+        run: make test

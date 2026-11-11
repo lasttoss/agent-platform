@@ -1,5 +1,7 @@
 # agent-platform
 
+[![test](https://github.com/lasttoss/agent-platform/actions/workflows/test.yml/badge.svg)](https://github.com/lasttoss/agent-platform/actions/workflows/test.yml)
+
 One repo, four small services, one picture. The point of the repo is a single rule:
 
 > **Identity comes from the transport. Authority comes from the gateway. Workers only work.**

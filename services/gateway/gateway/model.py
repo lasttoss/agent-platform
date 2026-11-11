@@ -11,6 +11,10 @@ import urllib.error
 import urllib.request
 
 
+def enabled() -> bool:
+    return bool(os.environ.get("MODEL_BASE_URL", "").rstrip("/"))
+
+
 def complete(system: str, user: str) -> tuple[str, dict]:
     base = os.environ.get("MODEL_BASE_URL", "").rstrip("/")
     key = os.environ.get("MODEL_API_KEY", "")

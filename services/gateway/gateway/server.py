@@ -181,12 +181,16 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
                              "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cache": hit["layer"]}}
 
     if picked is None or picked[0] not in routable:
-        reply, usage = model.complete(
-            "You are a terse assistant. Answer in the user's language.",
-            text) if model.os.environ.get("MODEL_BASE_URL") else (
-            "Mình chưa có công cụ cho việc này.", {"prompt_tokens": 0, "completion_tokens": 0})
+        if model.enabled() and policy.free_chat_enabled(rules, principal):
+            reply, usage = model.complete(
+                "You are a terse assistant. Answer in the user's language.", text)
+            decision = "free_chat"
+        else:
+            reply, usage = "Mình chưa có công cụ cho việc này.", {
+                "prompt_tokens": 0, "completion_tokens": 0, "mock": True}
+            decision = "no_tool"
         _charge(principal["user_id"], usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0), limit_req, limit_tok)
-        _audit({"user": uid, "chat": chat, "decision": "no_tool", "tools_visible": tools})
+        _audit({"user": uid, "chat": chat, "decision": decision, "tools_visible": tools})
         return 200, {"delivered": "chat", "chat_reply": reply, "dm": None,
                      "tools_visible": tools, "usage": usage}
 

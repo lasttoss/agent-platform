@@ -28,7 +28,7 @@ for f in $staged; do
   grep -nEq '/home/[A-Za-z0-9._-]+/' <<<"$text"                      && say "absolute home path in $f"
 
   # money: allow only the counting-pattern fixtures, so a real amount cannot slip in
-  for m in $(grep -oE '[0-9]{2,3}[.,_][0-9]{3}[.,_][0-9]{3}' <<<"$text" | tr ',' '.' | sort -u); do
+  for m in $(grep -oE '[0-9]{2,3}[.,_][0-9]{3}[.,_][0-9]{3}' <<<"$text" | tr ',_' '..' | sort -u); do
     case "$m" in
       12.345.000|9.876.000|1.234.000|1.357.400) ;;
       *) say "money literal that is not a fixture: $m in $f";;

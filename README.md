@@ -60,6 +60,20 @@ cd services/gateway && python3 cli.py --chat dm "ocr CV.pdf"
   and in each service README, and adding it does not change the boundary above.
 - The Go port of the gateway. Same `policy.json`, same tests, different runtime.
 
+## When no tool matches
+
+The gateway does not fall back to ungrounded chat by default. A request that matches no tool
+returns one fixed sentence and **never reaches a provider** — that path is where a demo starts
+answering questions it has no data for, in the owner's name. Opting in is explicit, per chat:
+
+```json
+"chats": { "dm": { ..., "free_chat": true }, "group_public": { ..., "free_chat": false } }
+```
+
+Two tests pin both halves: with a counting fake endpoint, a no-tool question in a group makes
+**0** model calls and costs **0** tokens, while the same question in a DM makes exactly **1**.
+A policy that omits the key behaves like `false`.
+
 ## Three-layer cache (token cost)
 
 See `docs/figures/cache-layers.png` for the same idea as a picture.

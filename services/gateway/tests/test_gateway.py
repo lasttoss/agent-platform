@@ -32,6 +32,35 @@ def _post(port: int, payload: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read().decode())
 
 
+def _start_fake_model() -> dict:
+    """A counting stand-in for an OpenAI-compatible endpoint: proves whether the gateway
+    decided to spend tokens, without any key or network."""
+    import json as _json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    state = {"count": 0}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            state["count"] += 1
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            raw = _json.dumps({"choices": [{"message": {"content": "MODEL-ANSWER"}}],
+                               "usage": {"prompt_tokens": 11, "completion_tokens": 7}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    state["port"] = srv.server_address[1]
+    return state
+
+
 class GatewayTest(unittest.TestCase):
     policy_path = ROOT / "config" / "policy.json"
 
@@ -63,6 +92,44 @@ class GatewayTest(unittest.TestCase):
         finally:
             os.environ.pop("STATE_DIR", None)
             server.install_state(self.state)
+
+    def test_no_tool_question_does_not_reach_the_model_in_a_group(self):
+        """The no-tool path is where ungrounded answers appear. In a group it must stay closed,
+        even when a provider is configured."""
+        calls = _start_fake_model()
+        os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{calls['port']}/v1"
+        try:
+            code, body = self.ask("thời tiết hôm nay thế nào", chat="group_internal")
+            self.assertEqual(code, 200)
+            self.assertIn("chưa có công cụ", body["chat_reply"])
+            self.assertEqual(calls["count"], 0, "model was called on a no-tool group request")
+            self.assertEqual(body["usage"]["prompt_tokens"], 0)
+        finally:
+            os.environ.pop("MODEL_BASE_URL", None)
+
+    def test_dm_free_chat_does_call_the_model_when_opted_in(self):
+        """The other half of the same rule: where the policy opts in, the model is used —
+        otherwise the previous test would pass for the wrong reason."""
+        calls = _start_fake_model()
+        os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{calls['port']}/v1"
+        try:
+            code, body = self.ask("thời tiết hôm nay thế nào", chat="dm")
+            self.assertEqual(code, 200)
+            self.assertEqual(body["chat_reply"], "MODEL-ANSWER")
+            self.assertEqual(calls["count"], 1)
+            self.assertEqual(body["usage"]["prompt_tokens"], 11)
+        finally:
+            os.environ.pop("MODEL_BASE_URL", None)
+
+    def test_free_chat_is_opt_in_per_chat(self):
+        rules = policy.load_rules(self.policy_path)
+        dm = policy.resolve(rules, "1001", "dm")
+        group = policy.resolve(rules, "1001", "group_internal")
+        self.assertTrue(policy.free_chat_enabled(rules, dm))
+        self.assertFalse(policy.free_chat_enabled(rules, group))
+        # a policy that never mentions the key must behave like "off"
+        rules["chats"]["dm"].pop("free_chat", None)
+        self.assertFalse(policy.free_chat_enabled(rules, dm))
 
     def test_committed_policy_contains_no_real_person(self):
         """Guard: repo templates hold demo users only. Real ids are 8-9 digits, demo ids 4.

@@ -87,6 +87,17 @@ def chat_conf(rules: dict, principal: dict) -> dict:
     return rules["chats"][principal["chat_type"]]
 
 
+def free_chat_enabled(rules: dict, principal: dict) -> bool:
+    """May the model answer when no tool matched?
+
+    Default is no. A gateway whose model is not allowed to be a source of facts must not
+    fall back to ungrounded chat just because the request missed every tool: that path is
+    where a demo starts inventing answers under the owner's name. Opting in is explicit,
+    per chat, in the policy file.
+    """
+    return bool(chat_conf(rules, principal).get("free_chat", False))
+
+
 def routable_tools(rules: dict, principal: dict) -> list[str]:
     """Tools the gateway may execute for this caller in this chat: model-visible
     tools plus private-only tools (personal ones that must never be posted here)."""

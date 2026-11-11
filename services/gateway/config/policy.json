@@ -29,7 +29,8 @@
         "mail_list"
       ],
       "personal_data": true,
-      "private_tools": []
+      "private_tools": [],
+      "free_chat": true
     },
     "group_internal": {
       "tools": [
@@ -40,14 +41,16 @@
       "private_tools": [
         "salary_self",
         "ocr_extract"
-      ]
+      ],
+      "free_chat": false
     },
     "group_public": {
       "tools": [
         "docs_search"
       ],
       "personal_data": false,
-      "private_tools": []
+      "private_tools": [],
+      "free_chat": false
     }
   },
   "quota": {

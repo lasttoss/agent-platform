@@ -11,7 +11,10 @@ import os
 import urllib.error
 import urllib.request
 
-SALARY_VND = {"1001": 12_345_000, "2002": 9_876_000}   # demo fixtures, synthetic numbers
+# Demo fixtures. Deliberately an amount nobody could mistake for a real Vietnamese salary:
+# an example that looks like real data is a liability, not an illustration.
+SALARY = {"1001": {"amount": 100_000, "currency": "USD"},
+          "2002": {"amount": 80_000, "currency": "USD"}}
 DOCS = [
     ("runbook-restart", "How to restart the game server without dropping sessions"),
     ("policy-data", "What counts as personal data in our systems"),
@@ -63,9 +66,14 @@ def _call_ocr(path: str) -> dict:
 
 
 def load_salary_overrides(values: dict | None) -> None:
-    """Salary fixtures are not committed: real amounts live in config/local.json."""
-    for uid, amount in (values or {}).items():
-        SALARY_VND[str(uid)] = int(amount)
+    """Real amounts live in config/local.json; accepts either 40000000 or
+    {"amount": 40000000, "currency": "VND"} so the file stays readable."""
+    for uid, value in (values or {}).items():
+        if isinstance(value, dict):
+            SALARY[str(uid)] = {"amount": int(value["amount"]),
+                                "currency": value.get("currency", "VND")}
+        else:
+            SALARY[str(uid)] = {"amount": int(value), "currency": "VND"}
 
 
 def call(name: str, principal: dict, args: dict) -> dict:
@@ -74,9 +82,10 @@ def call(name: str, principal: dict, args: dict) -> dict:
     if name == "salary_self":
         # No user_id argument on purpose: the caller cannot ask for someone else.
         uid = principal["user_id"]
-        if uid not in SALARY_VND:
+        if uid not in SALARY:
             return {"found": False}
-        return {"found": True, "amount_vnd": SALARY_VND[uid], "currency": "VND"}
+        record = SALARY[uid]
+        return {"found": True, "amount": record["amount"], "currency": record["currency"]}
     if name == "docs_search":
         q = (args.get("q") or "").lower()
         hits = [{"id": i, "title": t} for i, t in DOCS if q in i or q in t.lower()]

@@ -66,7 +66,7 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(self._drain(), 1)
         self.assertEqual(len(self.fake.sent), 1)
         self.assertEqual(self.fake.sent[0]["chat_id"], 1001)
-        self.assertIn("12.345.000", self.fake.sent[0]["text"])
+        self.assertIn("100.000 USD", self.fake.sent[0]["text"])
 
     def test_personal_answer_never_lands_in_the_group(self):
         self.fake.push(1001, -100123, "supergroup", "lương tháng này của tôi")
@@ -74,9 +74,9 @@ class AdapterTest(unittest.TestCase):
         to_group = [m for m in self.fake.sent if m["chat_id"] == -100123]
         to_user = [m for m in self.fake.sent if m["chat_id"] == 1001]
         self.assertEqual(len(to_group), 1)
-        self.assertNotIn("12.345.000", to_group[0]["text"])
+        self.assertNotIn("100.000 USD", to_group[0]["text"])
         self.assertEqual(len(to_user), 1)
-        self.assertIn("12.345.000", to_user[0]["text"])
+        self.assertIn("100.000 USD", to_user[0]["text"])
 
     def test_unknown_user_gets_no_answer(self):
         self.fake.push(9999, 9999, "private", "tài liệu runbook")

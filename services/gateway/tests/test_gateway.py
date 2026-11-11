@@ -75,7 +75,7 @@ class GatewayTest(unittest.TestCase):
         # every salary literal in tools.py must be one of the two synthetic fixtures
         tools_src = (Path(__file__).resolve().parent.parent / "gateway" / "tools.py").read_text(encoding="utf-8")
         amounts = set(re.findall(r"\b\d{1,3}(?:_\d{3}){2}\b", tools_src))
-        self.assertEqual(amounts, {"12_345_000", "9_876_000"}, f"unexpected salary fixture: {amounts}")
+        self.assertEqual(amounts, set(), f"a large money literal is committed: {amounts}")
 
     def test_local_override_merges_without_touching_the_template(self):
         rules = policy.load_rules(self.policy_path)
@@ -95,21 +95,21 @@ class GatewayTest(unittest.TestCase):
         code, body = self.ask("lương tháng này của tôi bao nhiêu")
         self.assertEqual(code, 200)
         self.assertEqual(body["delivered"], "chat")
-        self.assertIn("12.345.000", body["chat_reply"])
+        self.assertIn("100.000 USD", body["chat_reply"])
         self.assertIsNone(body["dm"])
 
     def test_group_never_gets_personal_number(self):
         code, body = self.ask("lương tháng này của tôi bao nhiêu", chat="group_internal")
         self.assertEqual(code, 200)
         self.assertEqual(body["delivered"], "dm")
-        self.assertNotIn("12.345.000", body["chat_reply"])
-        self.assertIn("12.345.000", body["dm"]["text"])
+        self.assertNotIn("100.000 USD", body["chat_reply"])
+        self.assertIn("100.000 USD", body["dm"]["text"])
 
     def test_public_group_has_no_personal_tool_visible(self):
         code, body = self.ask("lương tháng này của tôi bao nhiêu", chat="group_public")
         self.assertEqual(code, 200)
         self.assertNotIn("salary_self", body["tools_visible"])
-        self.assertNotIn("12.345.000", json.dumps(body, ensure_ascii=False))
+        self.assertNotIn("100.000 USD", json.dumps(body, ensure_ascii=False))
 
     def test_destructive_tool_is_never_visible(self):
         for chat in ("dm", "group_internal", "group_public"):
@@ -120,8 +120,8 @@ class GatewayTest(unittest.TestCase):
         # Subject is the caller, so user 2002 asking gets 2002's number.
         code, body = self.ask("lương của Dũng", user="2002")
         self.assertEqual(code, 200)
-        self.assertIn("9.876.000", body["chat_reply"])
-        self.assertNotIn("12.345.000", body["chat_reply"])
+        self.assertIn("80.000 USD", body["chat_reply"])
+        self.assertNotIn("100.000 USD", body["chat_reply"])
 
     def test_quota_is_enforced(self):
         rules = json.loads(self.policy_path.read_text())
@@ -160,7 +160,7 @@ class GatewayTest(unittest.TestCase):
     def test_no_diacritics_input_is_understood(self):
         code, body = self.ask("luong thang nay cua toi")
         self.assertEqual(code, 200)
-        self.assertIn("12.345.000", body["chat_reply"])
+        self.assertIn("100.000 USD", body["chat_reply"])
         code, body = self.ask("trang thai")
         self.assertEqual(code, 200)
         self.assertIn("game=ok", body["chat_reply"])
@@ -186,8 +186,8 @@ class GatewayTest(unittest.TestCase):
     def test_cache_does_not_leak_between_users(self):
         self.ask("lương tháng này của tôi", user="1001")
         _, b = self.ask("lương tháng này của tôi", user="2002")
-        self.assertIn("9.876.000", b["chat_reply"])
-        self.assertNotIn("12.345.000", b["chat_reply"])
+        self.assertIn("80.000 USD", b["chat_reply"])
+        self.assertNotIn("100.000 USD", b["chat_reply"])
 
     def test_consent_gates_provider_tools(self):
         # 1001 granted drive + imap; 2002 granted neither.

@@ -20,7 +20,7 @@ make demo    # four end-to-end calls showing the same question in three chat typ
 
 | chat type | what the caller sees in the chat | delivered |
 |---|---|---|
-| `dm` | `Lương tháng này của bạn là 12.345.000 VND (gross).` | chat |
+| `dm` | `Lương tháng này của bạn là 100.000 USD.` | chat |
 | `group_internal` | `Mình gửi riêng cho bạn nhé.` + the number by DM | dm |
 | `group_public` | `Mình chưa có công cụ cho việc này.` | chat |
 | unknown user | `403 {"denied": {"code": "unknown_user"}}` | — |

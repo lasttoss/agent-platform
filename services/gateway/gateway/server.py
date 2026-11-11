@@ -126,8 +126,8 @@ def _render(text: str, tool: str, result: dict, principal: dict) -> str:
         if not result.get("found"):
             base = "Không tìm thấy bản ghi lương của bạn."
         else:
-            vnd = f"{result['amount_vnd']:,}".replace(",", ".")
-            base = f"Lương tháng này của bạn là {vnd} VND (gross)."
+            amount = f"{result['amount']:,}".replace(",", ".")
+            base = f"Lương tháng này của bạn là {amount} {result['currency']}."
     elif tool == "docs_search":
         base = "Tài liệu liên quan: " + (", ".join(h["id"] for h in result["hits"]) or "không có")
     else:

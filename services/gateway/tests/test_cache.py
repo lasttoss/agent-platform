@@ -19,10 +19,10 @@ class CacheTest(unittest.TestCase):
 
     def test_exact_hit_returns_answer_and_counts(self):
         k = exact_key("lương tháng này", ["salary_self"], "v1", "dm", "user:1001")
-        self.c.put_exact(k, "12.345.000", ["salary_self"], 120, 60, "user:1001")
+        self.c.put_exact(k, "100.000 USD", ["salary_self"], 120, 60, "user:1001")
         hit = self.c.get_exact(k)
         self.assertEqual(hit["layer"], "exact")
-        self.assertEqual(hit["answer"], "12.345.000")
+        self.assertEqual(hit["answer"], "100.000 USD")
         self.assertEqual(self.c.stats()["l1_hit"], 1)
 
     def test_tool_order_does_not_change_the_key(self):
@@ -48,18 +48,18 @@ class CacheTest(unittest.TestCase):
         self.assertIsNone(self.c.get_exact(k))
 
     def test_semantic_hit_for_reworded_question(self):
-        self.c.put_semantic("luong thang nay cua toi bao nhieu", "12.3tr", 200, 600, "user:1001")
+        self.c.put_semantic("luong thang nay cua toi bao nhieu", "100k USD", 200, 600, "user:1001")
         hit = self.c.get_semantic("thang nay luong cua toi bao nhieu", "user:1001")
         self.assertIsNotNone(hit)
         self.assertEqual(hit["layer"], "semantic")
         self.assertGreaterEqual(hit["similarity"], 0.93)
 
     def test_semantic_never_crosses_scope(self):
-        self.c.put_semantic("luong thang nay cua toi", "12.3tr", 200, 600, "user:1001")
+        self.c.put_semantic("luong thang nay cua toi", "100k USD", 200, 600, "user:1001")
         self.assertIsNone(self.c.get_semantic("luong thang nay cua toi", "user:2002"))
 
     def test_unrelated_question_misses(self):
-        self.c.put_semantic("luong thang nay cua toi", "12.3tr", 200, 600, "user:1001")
+        self.c.put_semantic("luong thang nay cua toi", "100k USD", 200, 600, "user:1001")
         self.assertIsNone(self.c.get_semantic("deploy production now", "user:1001"))
 
     def test_prefix_fingerprint_is_stable_and_sorted(self):

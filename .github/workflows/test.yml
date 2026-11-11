@@ -20,12 +20,13 @@ jobs:
       # must still fail the job when pdftotext really is absent.
       - name: Ensure poppler for the PDF text layer
         run: |
-          if command -v pdftotext >/dev/null 2>&1; then
-            pdftotext -v 2>&1 | head -1
-          else
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq poppler-utils
+          if ! command -v pdftotext >/dev/null 2>&1; then
+            # A noisy mirror returns non-zero from `apt-get update` even when the install
+            # would succeed, so update is tolerated — the binary check below is what decides.
+            sudo apt-get update -o Acquire::Retries=5 || true
+            sudo apt-get install -y poppler-utils
           fi
+          pdftotext -v 2>&1 | head -1
 
       - name: Python extras (Pillow draws the synthetic samples)
         run: python3 -m pip install --quiet pillow

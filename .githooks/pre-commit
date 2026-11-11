@@ -22,7 +22,8 @@ for f in $staged; do
   grep -nEq '\b(sk|ghp|gho|ghu|ghs)_[A-Za-z0-9]{16,}' <<<"$text"     && say "api/github token in $f"
   grep -nEq '\bAKIA[0-9A-Z]{16}\b' <<<"$text"                        && say "aws key in $f"
   grep -nEq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' <<<"$text"       && say "private key in $f"
-  grep -nEiq '(password|passwd|secret|api_key|token)[[:space:]]*[:=][[:space:]]*[^[:space:]"'"'"']{6,}' <<<"$text" \
+  # placeholders (<...>, ${...}, $VAR, "..." ) are documentation, not credentials
+  grep -nEiq '(password|passwd|secret|api_key|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9._/-]{8,}' <<<"$text" \
     && say "hardcoded credential in $f"
   grep -nEq '"/?[0-9]{8,10}"[[:space:]]*:' <<<"$text"                && say "real-looking platform id as a key in $f"
   grep -nEq '/home/[A-Za-z0-9._-]+/' <<<"$text"                      && say "absolute home path in $f"

@@ -15,8 +15,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: System tools the OCR worker shells out to
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+      # poppler is preinstalled on ubuntu-latest; only pay for apt when it is not.
+      # A blanket "apt-get || true" would hide a real missing binary, so the failure
+      # must still fail the job when pdftotext really is absent.
+      - name: Ensure poppler for the PDF text layer
+        run: |
+          if command -v pdftotext >/dev/null 2>&1; then
+            pdftotext -v 2>&1 | head -1
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq poppler-utils
+          fi
 
       - name: Python extras (Pillow draws the synthetic samples)
         run: python3 -m pip install --quiet pillow

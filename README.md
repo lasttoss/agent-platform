@@ -150,6 +150,11 @@ cat services/gateway/config/policy.json | python3 -m json.tool | head
 cat config/local.json          # gitignored; not in git history
 ```
 
+## License
+
+MIT — see `LICENSE`. Without a license file the default is "all rights reserved": nobody may
+legally copy, run or adapt this code, which defeats the point of publishing it as a work sample.
+
 ## Pre-commit guard
 
 ```bash

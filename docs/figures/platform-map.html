@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agent-platform map</title>
+<style>
+  :root{
+    --paper:#f5f5f5; --paper-2:#ececec;
+    --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399;
+    --rule:rgba(45,49,66,0.12); --rule-solid:#bfc0c0;
+    --accent:#eb6c36; --accent-tint:rgba(235,108,54,0.08); --link:#2e5aa8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:34px 30px 38px;background:var(--paper);color:var(--ink);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    font-size:13px;line-height:1.5}
+  .wrap{max-width:1340px;margin:0 auto}
+  h1{font-size:21px;font-weight:600;letter-spacing:-0.01em;margin:0 0 4px}
+  .lead{color:var(--muted);font-size:13px;margin:0 0 20px;max-width:88ch}
+  .canvas{background:var(--paper-2);border:1px solid var(--rule);border-radius:4px;
+    padding:10px 12px 6px;overflow:auto}
+  svg{display:block;width:100%;height:auto;min-width:1000px}
+  .n{fill:var(--paper);stroke:var(--rule-solid);stroke-width:1}
+  .nf{fill:var(--paper);stroke:var(--muted);stroke-width:1}
+  .focal{fill:var(--accent-tint);stroke:var(--accent);stroke-width:1.6}
+  .grp{fill:none;stroke:var(--rule-solid);stroke-width:1;stroke-dasharray:4 4}
+  .t{font-family:Inter,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;fill:var(--ink)}
+  .name{font-size:13px;font-weight:600}
+  .sub{font-size:10.5px;fill:var(--muted)}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:9px;fill:var(--soft);letter-spacing:.04em}
+  .eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:8px;fill:var(--soft);letter-spacing:.16em}
+  .al{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:8.5px;fill:var(--muted)}
+  .arw{stroke:var(--muted);stroke-width:1.4;fill:none}
+  .arw-link{stroke:var(--link);stroke-width:1.4;fill:none}
+  .arw-dash{stroke:var(--soft);stroke-width:1.2;fill:none;stroke-dasharray:5 4}
+  figcaption{margin:16px auto 0;max-width:88ch;font-size:13px;color:var(--muted);line-height:1.55}
+  figcaption b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>One rule, four services</h1>
+  <p class="lead">Identity comes from the transport. Authority comes from the gateway. Workers only work.
+  Every arrow below exists to keep one of those three statements true.</p>
+
+  <figure class="canvas">
+    <svg viewBox="0 0 1280 540" role="img" aria-labelledby="pmTitle pmDesc"
+         xmlns="http://www.w3.org/2000/svg">
+      <title id="pmTitle">agent-platform: clients, gateway, tool workers, providers, delivery and state</title>
+      <desc id="pmDesc">Chat clients send signed events to the gateway. The gateway resolves identity,
+      applies policy and consent, filters the tool list, and calls tool workers over HTTP or MCP.
+      Workers reach external providers with a token brokered by the gateway. Answers go to the chat as
+      aggregates, or to a direct message when the data is personal or belongs to a third party.
+      Policy, consent, tokens, jobs and an append-only audit log live server-side.</desc>
+
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4f5d75"/></marker>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2e5aa8"/></marker>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#7a8399"/></marker>
+      </defs>
+
+      <text class="eyebrow" x="60" y="96">EDGE</text>
+      <text class="eyebrow" x="300" y="96">AUTHORITY · KEYS · AUDIT</text>
+      <text class="eyebrow" x="660" y="96">WORKERS · NO IDENTITY</text>
+
+      <!-- clients -->
+      <rect class="grp" x="60" y="110" width="180" height="140" rx="3"/>
+      <rect class="n" x="72" y="124" width="156" height="52" rx="3"/>
+      <text class="t name" x="86" y="146">Telegram</text>
+      <text class="t sub" x="86" y="162">message.from.id</text>
+      <rect class="n" x="72" y="186" width="156" height="52" rx="3"/>
+      <text class="t name" x="86" y="208">Discord</text>
+      <text class="t sub" x="86" y="224">member.id</text>
+      <text class="m" x="60" y="276">clients hold no secrets</text>
+
+      <!-- gateway -->
+      <rect class="focal" x="300" y="110" width="320" height="140" rx="3"/>
+      <text class="t name" x="316" y="136">Gateway</text>
+      <text class="t sub" x="316" y="160">identity → principal · policy + consent</text>
+      <text class="t sub" x="316" y="180">tool list filtered before the model sees it</text>
+      <text class="t sub" x="316" y="200">quota · tokens · audit · fail-closed</text>
+      <text class="m" x="316" y="230">the only component holding platform + model keys</text>
+
+      <!-- workers -->
+      <rect class="nf" x="660" y="110" width="300" height="140" rx="3"/>
+      <text class="t name" x="676" y="136">Tool workers · Python</text>
+      <text class="t sub" x="676" y="160">ocr · pdf/docx parse</text>
+      <text class="t sub" x="676" y="180">mail fetch · job runner</text>
+      <text class="t sub" x="676" y="200">drive / jira via MCP</text>
+      <text class="m" x="676" y="230">receives scope, never identity or policy</text>
+
+      <!-- arrows: clients → gateway → workers -->
+      <path class="arw" d="M240 180 H296" marker-end="url(#a1)"/>
+      <text class="al" x="246" y="170">signed</text>
+      <text class="al" x="246" y="198">event</text>
+      <path class="arw-link" d="M620 180 H656" marker-end="url(#a2)"/>
+      <text class="al" x="626" y="172">call</text>
+
+      <!-- providers -->
+      <path class="arw-dash" d="M810 250 V296" marker-end="url(#a3)"/>
+      <text class="al" x="822" y="274">OAuth + API</text>
+      <rect class="n" x="660" y="300" width="300" height="80" rx="3"/>
+      <text class="t name" x="676" y="326">External providers</text>
+      <text class="t sub" x="676" y="346">LLM · Google Drive · Jira · IMAP</text>
+      <text class="m" x="676" y="364">token brokered per user, never in the prompt</text>
+
+      <!-- delivery -->
+      <path class="arw" d="M380 250 V296" marker-end="url(#a1)"/>
+      <path class="arw-dash" d="M540 250 V296" marker-end="url(#a3)"/>
+      <rect class="n" x="300" y="300" width="180" height="80" rx="3"/>
+      <text class="t name" x="314" y="326">In the chat</text>
+      <text class="t sub" x="314" y="346">aggregates only</text>
+      <text class="m" x="314" y="364">"3 CV mới"</text>
+      <rect class="n" x="500" y="300" width="140" height="80" rx="3"/>
+      <text class="t name" x="514" y="326">By DM</text>
+      <text class="t sub" x="514" y="346">personal</text>
+      <text class="t sub" x="514" y="364">third-party</text>
+
+      <!-- state -->
+      <text class="eyebrow" x="60" y="426">STATE · SERVER SIDE · READ AT START, APPENDED PER DECISION</text>
+      <rect class="n" x="60" y="440" width="1160" height="62" rx="3"/>
+      <text class="t sub" x="80" y="466">policy.json</text>
+      <text class="t sub" x="260" y="466">providers.json</text>
+      <text class="t sub" x="470" y="466">consent.json</text>
+      <text class="t sub" x="660" y="466">tokens.db</text>
+      <text class="t sub" x="820" y="466">jobs.db</text>
+      <text class="t sub" x="960" y="466">audit.log</text>
+      <text class="m" x="80" y="490">tool lists per chat · auth type + scopes per provider · who granted what · encrypted tokens · queue state · JSONL decisions</text>
+    </svg>
+    <figcaption>
+      <b>Hình 1.</b> Bốn quyết định của hệ thống, nhìn trong một hình: danh tính lấy từ sự kiện có chữ ký
+      của nền tảng chat; quyền do gateway quyết và <i>lọc trước</i> khi model nhìn thấy danh sách tool;
+      worker không có danh tính, không có khoá nền tảng; và dữ liệu cá nhân hoặc của người thứ ba chỉ đi
+      đường DM, còn nhóm chỉ nhận số liệu tổng hợp. Thêm một tool mới không mở rộng quyền của ai — nó chỉ
+      thêm một dòng vào <code>policy.json</code> và một dòng vào audit.
+    </figcaption>
+  </figure>
+</main>
+<!-- diagram-meta {"sources":["agent-platform/services/gateway/gateway/policy.py","agent-platform/services/gateway/gateway/server.py","agent-platform/services/gateway/config/policy.json","agent-platform/services/ocr/server.py"]} -->
+</body>
+</html>

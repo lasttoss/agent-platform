@@ -1,0 +1,37 @@
+{
+  "llm": {
+    "auth": "api_key",
+    "held_by": "gateway",
+    "scopes": [],
+    "rate_limit": "600/min",
+    "tools": []
+  },
+  "google_drive": {
+    "auth": "oauth2_per_user",
+    "held_by": "gateway",
+    "scopes": ["drive.readonly", "drive.file"],
+    "rate_limit": "60/min/user",
+    "tools": ["drive_search", "drive_read"]
+  },
+  "jira": {
+    "auth": "pat_per_user",
+    "held_by": "gateway",
+    "scopes": ["read:jira-work"],
+    "rate_limit": "120/min/user",
+    "tools": ["jira_search"]
+  },
+  "imap": {
+    "auth": "app_password_per_user",
+    "held_by": "gateway",
+    "scopes": ["mail.read"],
+    "rate_limit": "30/min/user",
+    "tools": ["mail_list", "mail_fetch"]
+  },
+  "local_ocr": {
+    "auth": "none",
+    "held_by": "worker",
+    "scopes": [],
+    "rate_limit": "60/min",
+    "tools": ["ocr_extract"]
+  }
+}

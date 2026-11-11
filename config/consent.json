@@ -1,0 +1,21 @@
+{
+  "1001": {
+    "google_drive": [
+      "drive.readonly"
+    ],
+    "jira": [
+      "read:jira-work"
+    ],
+    "imap": [
+      "mail.read"
+    ],
+    "local_ocr": []
+  },
+  "2002": {
+    "google_drive": [],
+    "local_ocr": []
+  },
+  "3003": {
+    "local_ocr": []
+  }
+}

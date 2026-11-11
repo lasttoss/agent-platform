@@ -1,0 +1,17 @@
+# runtime state: audit trail, usage counters, cache — never in git
+state/
+*.db
+*.log
+*.sqlite3
+
+# local identity overrides: real platform user ids and salary fixtures stay on the machine
+config/local.json
+
+# generated test fixtures (see services/ocr/samples/make_samples.py)
+services/ocr/samples/*
+!services/ocr/samples/make_samples.py
+
+# python
+__pycache__/
+*.pyc
+.deps/

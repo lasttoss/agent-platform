@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Three cache layers, three prices</title>
+<style>
+  :root{
+    --paper:#f5f5f5; --paper-2:#ececec;
+    --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399;
+    --rule:rgba(45,49,66,0.12); --rule-solid:#bfc0c0;
+    --accent:#eb6c36; --accent-tint:rgba(235,108,54,0.08); --link:#2e5aa8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:34px 30px 38px;background:var(--paper);color:var(--ink);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    font-size:13px;line-height:1.5}
+  .wrap{max-width:1010px;margin:0 auto}
+  h1{font-size:21px;font-weight:600;letter-spacing:-0.01em;margin:0 0 4px}
+  .lead{color:var(--muted);font-size:13px;margin:0 0 20px;max-width:82ch}
+  .canvas{background:var(--paper-2);border:1px solid var(--rule);border-radius:4px;padding:10px 12px 6px;overflow:auto}
+  svg{display:block;width:100%;height:auto;min-width:860px}
+  .n{fill:var(--paper);stroke:var(--rule-solid);stroke-width:1}
+  .nf{fill:var(--paper);stroke:var(--muted);stroke-width:1}
+  .focal{fill:var(--accent-tint);stroke:var(--accent);stroke-width:1.6}
+  .t{font-family:Inter,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;fill:var(--ink)}
+  .name{font-size:13px;font-weight:600}
+  .sub{font-size:10.5px;fill:var(--muted)}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:9px;fill:var(--soft);letter-spacing:.04em}
+  .eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:8px;fill:var(--soft);letter-spacing:.16em}
+  .al{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:8.5px;fill:var(--muted)}
+  .chip{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:8px;fill:var(--muted);
+    stroke:var(--rule-solid);fill-opacity:1}
+  .arw{stroke:var(--muted);stroke-width:1.4;fill:none}
+  .arw-link{stroke:var(--link);stroke-width:1.4;fill:none}
+  .arw-dash{stroke:var(--soft);stroke-width:1.2;fill:none;stroke-dasharray:5 4}
+  figcaption{margin:16px auto 0;max-width:82ch;font-size:13px;color:var(--muted);line-height:1.55}
+  figcaption b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>Three cache layers, three prices</h1>
+  <p class="lead">Each layer answers cheaper than the one after it. A request falls through only
+  when the layer above cannot answer — so the cost of a repeated question is decided by the
+  cheapest layer that recognises it.</p>
+
+  <figure class="canvas">
+    <svg viewBox="0 0 940 600" role="img" aria-labelledby="clTitle clDesc" xmlns="http://www.w3.org/2000/svg">
+      <title id="clTitle">Gateway cache: exact match, semantic match, provider prefix cache</title>
+      <desc id="clDesc">A request enters the gateway. Layer 1 compares a hash of the normalised text, sorted
+      tool list, policy version, chat type and scope; a hit answers with zero model tokens. On a miss, layer 2
+      compares an embedding with cosine similarity at or above 0.93 inside the same scope; a hit reuses the
+      answer. On a second miss the provider is called with a byte-identical prompt prefix, so the static part
+      is billed once and cached on the provider side. After a miss the answer is written into layer 1 with a
+      per-tool TTL and into layer 2 under its scope. Personal answers are scoped to one user and TTL zero
+      disables caching for salary and mail.</desc>
+
+      <defs>
+        <marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4f5d75"/></marker>
+        <marker id="c2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2e5aa8"/></marker>
+        <marker id="c3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#7a8399"/></marker>
+      </defs>
+
+      <text class="eyebrow" x="60" y="96">REQUEST</text>
+      <text class="eyebrow" x="250" y="96">L1 · EXACT</text>
+      <text class="eyebrow" x="460" y="96">L2 · SEMANTIC</text>
+      <text class="eyebrow" x="670" y="96">L3 · PREFIX AT PROVIDER</text>
+
+      <!-- chain -->
+      <rect class="n" x="60" y="112" width="150" height="72" rx="3"/>
+      <text class="t name" x="74" y="138">Request</text>
+      <text class="t sub" x="74" y="156">text · tools · chat</text>
+      <text class="t sub" x="74" y="172">policy version</text>
+
+      <rect class="focal" x="250" y="112" width="170" height="72" rx="3"/>
+      <text class="t name" x="264" y="138">Exact hit</text>
+      <text class="t sub" x="264" y="156">sha256 of the key</text>
+      <text class="m" x="264" y="172">sorted tools, same scope</text>
+
+      <rect class="nf" x="460" y="112" width="170" height="72" rx="3"/>
+      <text class="t name" x="474" y="138">Semantic hit</text>
+      <text class="t sub" x="474" y="156">cosine ≥ 0.93</text>
+      <text class="m" x="474" y="172">same scope only</text>
+
+      <rect class="nf" x="670" y="112" width="200" height="72" rx="3"/>
+      <text class="t name" x="684" y="138">Provider call</text>
+      <text class="t sub" x="684" y="156">prefix byte-identical</text>
+      <text class="m" x="684" y="172">sorted tools + policy</text>
+
+      <path class="arw" d="M210 148 H246" marker-end="url(#c1)"/>
+      <text class="al" x="214" y="140">ask</text>
+      <path class="arw-dash" d="M420 148 H456" marker-end="url(#c3)"/>
+      <text class="al" x="424" y="140">miss</text>
+      <path class="arw-dash" d="M630 148 H666" marker-end="url(#c3)"/>
+      <text class="al" x="634" y="140">miss</text>
+
+      <!-- cost outcomes -->
+      <path class="arw" d="M335 184 V246" marker-end="url(#c1)"/>
+      <path class="arw" d="M545 184 V246" marker-end="url(#c1)"/>
+      <path class="arw-link" d="M770 184 V246" marker-end="url(#c2)"/>
+
+      <rect class="n" x="250" y="250" width="170" height="66" rx="3"/>
+      <text class="t name" x="264" y="276" style="font-size:12.5px">0 model tokens</text>
+      <text class="t sub" x="264" y="294">1 request slot charged</text>
+      <text class="m" x="264" y="308">answer returned as-is</text>
+
+      <rect class="n" x="460" y="250" width="170" height="66" rx="3"/>
+      <text class="t name" x="474" y="276" style="font-size:12.5px">0 model tokens</text>
+      <text class="t sub" x="474" y="294">answer reused</text>
+      <text class="m" x="474" y="308">similarity logged</text>
+
+      <rect class="n" x="670" y="250" width="200" height="66" rx="3"/>
+      <text class="t name" x="684" y="276" style="font-size:12.5px">prefix billed once</text>
+      <text class="t sub" x="684" y="294">then provider-cached</text>
+      <text class="m" x="684" y="308">rest billed per token</text>
+
+      <!-- write-back -->
+      <text class="eyebrow" x="60" y="368">AFTER A MISS · WRITE BACK</text>
+      <rect class="n" x="60" y="382" width="810" height="78" rx="3"/>
+      <text class="t sub" x="76" y="406">write L1 with a per-tool TTL, and L2 under the same scope</text>
+      <text class="m" x="76" y="426">salary_self 0 · mail_list 0 · status 30s · drive 5m · jira 10m · docs 1h · ocr 24h</text>
+      <text class="m" x="76" y="444">TTL = 0 means "never cache": the answer is personal data that changes or live status</text>
+
+      <!-- scope -->
+      <text class="eyebrow" x="60" y="500">SCOPE · THE CACHE'S SECURITY BOUNDARY</text>
+      <rect class="n" x="60" y="514" width="810" height="56" rx="3"/>
+      <text class="t sub" x="76" y="538">personal answer → key includes user:&lt;id&gt;, and is never served to another user</text>
+      <text class="m" x="76" y="556">tested: user 1001 asks salary, user 2002 asks the same question and still gets their own number</text>
+    </svg>
+    <figcaption>
+      <b>Hình 2.</b> Ba tầng, ba giá khác nhau. L1 so hash của (câu đã chuẩn hoá + tool đã sort + policy
+      version + loại chat + scope) nên trùng câu là trả ngay, không gọi model. L2 so embedding trong
+      <i>cùng scope</i> để bắt câu đổi cách nói. L3 không phải cache của mình: nó là việc giữ phần đầu prompt
+      byte-identical để provider tự cache — đổi thứ tự tool hay tăng policy version là mất. Scope là ranh
+      giới bảo mật: đáp án cá nhân khoá theo người, và những tool như lương hay mail đặt TTL = 0 để không
+      bao giờ được phục vụ lại.
+    </figcaption>
+  </figure>
+</main>
+<!-- diagram-meta {"sources":["agent-platform/services/gateway/gateway/cache.py","agent-platform/services/gateway/gateway/server.py"]} -->
+</body>
+</html>

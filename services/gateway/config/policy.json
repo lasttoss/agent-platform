@@ -1,0 +1,57 @@
+{
+  "allow_unknown_users": false,
+  "users": {
+    "1001": {
+      "name": "Dung",
+      "role": "owner",
+      "workspace": "dung"
+    },
+    "2002": {
+      "name": "Lan",
+      "role": "dev",
+      "workspace": "lan"
+    },
+    "3003": {
+      "name": "Dung",
+      "role": "owner",
+      "workspace": "dung"
+    }
+  },
+  "chats": {
+    "dm": {
+      "tools": [
+        "salary_self",
+        "docs_search",
+        "status",
+        "ocr_extract",
+        "drive_search",
+        "jira_search",
+        "mail_list"
+      ],
+      "personal_data": true,
+      "private_tools": []
+    },
+    "group_internal": {
+      "tools": [
+        "docs_search",
+        "status"
+      ],
+      "personal_data": false,
+      "private_tools": [
+        "salary_self",
+        "ocr_extract"
+      ]
+    },
+    "group_public": {
+      "tools": [
+        "docs_search"
+      ],
+      "personal_data": false,
+      "private_tools": []
+    }
+  },
+  "quota": {
+    "requests_per_day": 200,
+    "tokens_per_day": 200000
+  }
+}

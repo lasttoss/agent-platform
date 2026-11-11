@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat gateway topology</title>
+<style>
+  :root{
+    --paper:#f5f5f5; --paper-2:#ececec;
+    --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399;
+    --rule:rgba(45,49,66,0.12); --rule-solid:#bfc0c0;
+    --accent:#eb6c36; --accent-tint:rgba(235,108,54,0.08);
+    --link:#2e5aa8;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:36px 32px 40px;
+    background:var(--paper); color:var(--ink);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    font-size:13px; line-height:1.5;
+  }
+  .wrap{max-width:1010px;margin:0 auto}
+  h1{
+    font-size:21px; font-weight:600; letter-spacing:-0.01em;
+    margin:0 0 4px;
+  }
+  .lead{color:var(--muted); font-size:13px; margin:0 0 22px; max-width:78ch}
+  .canvas{
+    background:var(--paper-2); border:1px solid var(--rule);
+    border-radius:4px; padding:10px 12px 6px; overflow:auto;
+  }
+  svg{display:block; width:100%; height:auto; min-width:820px}
+  .n{fill:var(--paper); stroke:var(--rule-solid); stroke-width:1}
+  .nf{fill:var(--paper); stroke:var(--muted); stroke-width:1}
+  .focal{fill:var(--accent-tint); stroke:var(--accent); stroke-width:1.6}
+  .grp{fill:none; stroke:var(--rule-solid); stroke-width:1; stroke-dasharray:4 4}
+  .t{font-family:Inter,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; fill:var(--ink)}
+  .name{font-size:13px; font-weight:600}
+  .sub{font-size:10.5px; fill:var(--muted)}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:9px; fill:var(--soft); letter-spacing:.04em}
+  .eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:8px; fill:var(--soft); letter-spacing:.16em}
+  .al{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:8.5px; fill:var(--muted); letter-spacing:.03em}
+  .arw{stroke:var(--muted); stroke-width:1.4; fill:none}
+  .arw-link{stroke:var(--link); stroke-width:1.4; fill:none}
+  .arw-dash{stroke:var(--soft); stroke-width:1.2; fill:none; stroke-dasharray:5 4}
+  .hair{stroke:var(--rule-solid); stroke-width:1; fill:none}
+  figcaption{
+    margin:16px auto 0; max-width:78ch;
+    font-size:13px; color:var(--muted); line-height:1.55;
+  }
+  figcaption b{color:var(--ink); font-weight:600}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>A chat gateway is where authority lives</h1>
+  <p class="lead">The chat platform authenticates the person. The gateway decides what that person may
+  do in that particular chat. Tool services do the work, and never decide who is allowed.</p>
+
+  <figure class="canvas">
+    <svg viewBox="0 0 960 540" role="img" aria-labelledby="figTitle figDesc"
+         xmlns="http://www.w3.org/2000/svg">
+      <title id="figTitle">Chat gateway topology: chat platforms to gateway to tool services</title>
+      <desc id="figDesc">Chat platforms send a signed event to a Go gateway. The gateway maps the platform
+      user to an internal principal, filters the tool list for that user and chat type, calls Python tool
+      services over HTTP, gRPC or MCP, and delivers the answer either to the chat or privately by direct
+      message. Policy and an append-only audit log sit behind the gateway. No credential reaches the model.</desc>
+
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#4f5d75"/>
+        </marker>
+        <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#2e5aa8"/>
+        </marker>
+        <marker id="ahd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#7a8399"/>
+        </marker>
+      </defs>
+
+      <text class="eyebrow" x="40" y="104">EDGE · SIGNED EVENTS</text>
+      <text class="eyebrow" x="286" y="104">AUTHORITY</text>
+      <text class="eyebrow" x="682" y="104">WORKERS · NO POLICY</text>
+
+      <!-- clients -->
+      <rect class="grp" x="40" y="120" width="160" height="152" rx="3"/>
+      <rect class="n" x="52" y="136" width="136" height="52" rx="3"/>
+      <text class="t name" x="64" y="158">Telegram</text>
+      <text class="t sub" x="64" y="174">message.from.id</text>
+      <rect class="n" x="52" y="196" width="136" height="52" rx="3"/>
+      <text class="t name" x="64" y="218">Discord</text>
+      <text class="t sub" x="64" y="234">interaction.member.id</text>
+
+      <!-- gateway -->
+      <rect class="focal" x="286" y="120" width="310" height="152" rx="3"/>
+      <text class="t name" x="302" y="146">Gateway · Go</text>
+      <text class="t sub" x="302" y="170">1 · identity → internal principal</text>
+      <text class="t sub" x="302" y="190">2 · tool allowlist per user × chat</text>
+      <text class="t sub" x="302" y="210">3 · quota, audit, fail-closed</text>
+      <text class="m" x="302" y="240">the only place holding platform + provider keys</text>
+
+      <!-- tools -->
+      <rect class="nf" x="682" y="120" width="234" height="152" rx="3"/>
+      <text class="t name" x="696" y="146">Tool services · Python</text>
+      <text class="t sub" x="696" y="170">OCR · PDF / DOCX parse</text>
+      <text class="t sub" x="696" y="190">eval · agent harness</text>
+      <text class="t sub" x="696" y="210">internal APIs: HR, repo</text>
+      <text class="m" x="696" y="240">receives scope, never identity</text>
+
+      <!-- arrows: client → gateway -->
+      <path class="arw" d="M200 176 H282" marker-end="url(#ah)"/>
+      <text class="al" x="204" y="168">signed event</text>
+
+      <!-- arrows: gateway ↔ tools -->
+      <path class="arw-link" d="M596 176 H678" marker-end="url(#ahb)"/>
+      <text class="al" x="606" y="168">call</text>
+      <path class="arw-dash" d="M678 222 H600" marker-end="url(#ahd)"/>
+      <text class="al" x="606" y="238">result</text>
+      <text class="al" x="606" y="258" style="font-size:8px">HTTP / gRPC / MCP</text>
+
+      <!-- delivery -->
+      <text class="eyebrow" x="286" y="310">DELIVERY DECIDED BY CHAT TYPE</text>
+      <path class="arw" d="M361 272 V326" marker-end="url(#ah)"/>
+      <path class="arw-dash" d="M541 272 V326" marker-end="url(#ahd)"/>
+      <rect class="n" x="286" y="330" width="150" height="62" rx="3"/>
+      <text class="t name" x="300" y="354">In the chat</text>
+      <text class="t sub" x="300" y="372">public answer only</text>
+      <rect class="n" x="466" y="330" width="150" height="62" rx="3"/>
+      <text class="t name" x="480" y="354">By direct message</text>
+      <text class="t sub" x="480" y="372">personal number</text>
+      <text class="m" x="648" y="352">group_internal → DM</text>
+      <text class="m" x="648" y="370">group_public → refused</text>
+
+      <!-- gateway state -->
+      <text class="eyebrow" x="286" y="440">GATEWAY STATE · SERVER SIDE</text>
+      <rect class="n" x="286" y="450" width="146" height="56" rx="3"/>
+      <text class="t name" x="300" y="472" style="font-size:12px">policy.json</text>
+      <text class="t sub" x="300" y="490">tools vs private_tools</text>
+      <rect class="n" x="464" y="450" width="146" height="56" rx="3"/>
+      <text class="t name" x="478" y="472" style="font-size:12px">audit.log</text>
+      <text class="t sub" x="478" y="490">JSONL, append-only</text>
+      <text class="m" x="648" y="482">read at start · appended per decision</text>
+    </svg>
+    <figcaption>
+      <b>Figure 1.</b> The gateway is the only component that decides. Chat platforms authenticate the
+      person and pass a signed identity; the gateway turns it into a principal, removes tools that
+      principal may not use in that chat type, and calls a tool service with a narrow scope. Personal
+      results are routed to a direct message, never posted into a group. Tool services stay policy-free,
+      so adding one cannot widen anyone's authority.
+    </figcaption>
+  </figure>
+</main>
+<!-- diagram-meta {"sources":["agent-gateway/gateway/policy.py","agent-gateway/gateway/server.py","agent-gateway/config/policy.json"]} -->
+</body>
+</html>

@@ -6,6 +6,11 @@ One repo, four small services, one picture. The point of the repo is a single ru
 
 Everything else here exists to make that rule runnable and testable on a laptop.
 
+**Status: research notes, not production software.** Written to understand the problem and to be
+explained out loud; no support, no SLA, no deployment story. 43 tests run with the Python standard
+library alone (the OCR worker also needs poppler and Pillow). Everything that identifies a real
+person or a real amount lives outside git, in `config/local.json`.
+
 ## Layout
 
 ```

@@ -11,10 +11,10 @@ import os
 import urllib.error
 import urllib.request
 
-# Demo fixtures. Deliberately an amount nobody could mistake for a real Vietnamese salary:
-# an example that looks like real data is a liability, not an illustration.
-SALARY = {"1001": {"amount": 100_000, "currency": "USD"},
-          "2002": {"amount": 80_000, "currency": "USD"}}
+# Demo fixtures. The digits are a counting pattern (12-345-000, 9-876-000), not a market
+# rate: an example that could pass for real data is a liability, not an illustration.
+SALARY = {"1001": {"amount": 12_345_000, "currency": "VND"},
+          "2002": {"amount": 9_876_000, "currency": "VND"}}
 DOCS = [
     ("runbook-restart", "How to restart the game server without dropping sessions"),
     ("policy-data", "What counts as personal data in our systems"),

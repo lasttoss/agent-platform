@@ -19,10 +19,10 @@ class CacheTest(unittest.TestCase):
 
     def test_exact_hit_returns_answer_and_counts(self):
         k = exact_key("lương tháng này", ["salary_self"], "v1", "dm", "user:1001")
-        self.c.put_exact(k, "100.000 USD", ["salary_self"], 120, 60, "user:1001")
+        self.c.put_exact(k, "12.345.000 VND", ["salary_self"], 120, 60, "user:1001")
         hit = self.c.get_exact(k)
         self.assertEqual(hit["layer"], "exact")
-        self.assertEqual(hit["answer"], "100.000 USD")
+        self.assertEqual(hit["answer"], "12.345.000 VND")
         self.assertEqual(self.c.stats()["l1_hit"], 1)
 
     def test_tool_order_does_not_change_the_key(self):

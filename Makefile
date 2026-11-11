@@ -1,8 +1,11 @@
 PY := python3
 
-.PHONY: test test-gateway test-ocr run-gateway run-ocr run-adapter demo-adapter
+.PHONY: test samples test-gateway test-ocr run-gateway run-ocr run-adapter demo-adapter
 
-test: test-gateway test-ocr
+test: samples test-gateway test-ocr
+
+samples:
+	@python3 services/ocr/samples/make_samples.py >/dev/null && echo "== samples =="
 
 test-gateway:
 	@echo "== gateway =="

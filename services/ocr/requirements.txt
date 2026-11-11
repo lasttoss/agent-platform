@@ -1,0 +1,4 @@
+# Optional at runtime: the OCR worker prefers poppler's pdftotext and falls back to pypdf.
+pypdf>=4.0
+# Only needed to regenerate the synthetic samples (services/ocr/samples/make_samples.py).
+Pillow>=10.0

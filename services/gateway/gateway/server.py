@@ -32,6 +32,8 @@ POLICY_VERSION = os.environ.get("POLICY_VERSION", "v1")
 
 # Cache TTL by tool. 0 means "never cache": the answer is either personal data that
 # changes, or a live status that would be wrong to serve twice.
+SYSTEM = ("You are a gateway assistant. Use a tool whenever one fits. Never invent numbers, "
+          "names or status: if no tool returns them, say you do not have that information.")
 TTL = {"salary_self": 0, "mail_list": 0, "status": 30, "docs_search": 3600,
        "ocr_extract": 86400, "drive_search": 300, "jira_search": 600}
 _LOCK = threading.Lock()
@@ -159,13 +161,13 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
 
     consent = consent if consent is not None else policy.load_consent(
         ROOT.parent.parent / "config" / "consent.json")
-    tools = [t for t in policy.visible_tools(rules, principal) if policy.consent_allows(principal, t, consent)]
+    visible = [t for t in policy.visible_tools(rules, principal) if policy.consent_allows(principal, t, consent)]
     routable = [t for t in policy.routable_tools(rules, principal) if policy.consent_allows(principal, t, consent)]
     picked = _pick_tool(text)
     tool_for_ttl = picked[0] if picked else None
     ttl = TTL.get(tool_for_ttl or "", 0)
     scope = _scope(principal, tool_for_ttl)
-    key = cache.exact_key(text, tools, POLICY_VERSION, principal["chat_type"], scope)
+    key = cache.exact_key(text, visible, POLICY_VERSION, principal["chat_type"], scope)
     if ttl > 0:
         for hit in (CACHE.get_exact(key), CACHE.get_semantic(text, scope)):
             if hit:
@@ -175,10 +177,35 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
                 _audit({"user": uid, "chat": chat, "decision": f"cache_{hit['layer']}",
                         "scope": scope, "tool": tool_for_ttl})
                 return 200, {"delivered": "chat", "chat_reply": hit["answer"], "dm": None,
-                             "tools_visible": tools,
+                             "tools_visible": visible,
                              "cache": {"layer": hit["layer"], "saved_tokens": hit["saved_tokens"],
                                        "similarity": hit.get("similarity")},
                              "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cache": hit["layer"]}}
+
+    # If a provider is configured, the model picks the tool — from the visible list only.
+    # This is the difference between "filter before the model" and "deny after the call":
+    # a tool that is not in `visible` is not in the request at all.
+    offered = [tools.schema(t) for t in visible]
+    if model.enabled():
+        turn = model.complete_with_tools(SYSTEM, text, offered)
+        spent = turn["usage"].get("prompt_tokens", 0) + turn["usage"].get("completion_tokens", 0)
+        _charge(principal["user_id"], spent, limit_req, limit_tok)
+        if turn["tool_calls"]:
+            blocked = [c for c in turn["tool_calls"] if c["name"] not in routable]
+            if blocked:
+                _audit({"user": uid, "chat": chat, "decision": "tool_not_allowed",
+                        "tool": blocked[0]["name"], "offered": visible})
+                return 200, {"delivered": "chat", "dm": None,
+                             "chat_reply": "Mình không có quyền làm việc này.",
+                             "denied_tool": blocked[0]["name"],
+                             "tools_visible": visible, "tools_offered": len(offered),
+                             "usage": turn["usage"]}
+            picked = (turn["tool_calls"][0]["name"], turn["tool_calls"][0]["arguments"])
+        elif turn["content"] and policy.free_chat_enabled(rules, principal):
+            _audit({"user": uid, "chat": chat, "decision": "free_chat", "tools_visible": visible})
+            return 200, {"delivered": "chat", "chat_reply": turn["content"], "dm": None,
+                         "tools_visible": visible, "tools_offered": len(offered),
+                         "usage": turn["usage"]}
 
     if picked is None or picked[0] not in routable:
         if model.enabled() and policy.free_chat_enabled(rules, principal):
@@ -190,9 +217,9 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
                 "prompt_tokens": 0, "completion_tokens": 0, "mock": True}
             decision = "no_tool"
         _charge(principal["user_id"], usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0), limit_req, limit_tok)
-        _audit({"user": uid, "chat": chat, "decision": decision, "tools_visible": tools})
+        _audit({"user": uid, "chat": chat, "decision": decision, "tools_visible": visible})
         return 200, {"delivered": "chat", "chat_reply": reply, "dm": None,
-                     "tools_visible": tools, "usage": usage}
+                     "tools_visible": visible, "usage": usage}
 
     tool, args = picked
     try:
@@ -216,7 +243,7 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
     _charge(principal["user_id"], usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0), limit_req, limit_tok)
 
     if ttl > 0:
-        CACHE.put_exact(key, answer, tools, int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0)), ttl, scope)
+        CACHE.put_exact(key, answer, visible, int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0)), ttl, scope)
         CACHE.put_semantic(text, answer, int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0)), ttl, scope)
 
     if mode == "call_and_deliver_privately":
@@ -225,11 +252,11 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
         # be shown in this chat. The adapter must read `dm.text`.
         return 200, {"delivered": "dm", "chat_reply": "Mình gửi riêng cho bạn nhé.",
                      "dm": {"text": answer, "reason": "personal_data_in_shared_chat"},
-                     "tools_visible": tools, "usage": usage}
+                     "tools_visible": visible, "usage": usage}
 
     _audit({"user": uid, "chat": chat, "tool": tool, "decision": "answered"})
     return 200, {"delivered": "chat", "chat_reply": answer, "dm": None,
-                 "tools_visible": tools, "usage": usage}
+                 "tools_visible": visible, "usage": usage}
 
 
 class Handler(BaseHTTPRequestHandler):

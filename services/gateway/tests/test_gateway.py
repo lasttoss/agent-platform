@@ -32,13 +32,13 @@ def _post(port: int, payload: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read().decode())
 
 
-def _start_fake_model() -> dict:
+def _start_fake_model(tool_calls=None, content="MODEL-ANSWER") -> dict:
     """A counting stand-in for an OpenAI-compatible endpoint: proves whether the gateway
     decided to spend tokens, without any key or network."""
     import json as _json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    state = {"count": 0}
+    state = {"count": 0, "last_request": {}}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -46,8 +46,15 @@ def _start_fake_model() -> dict:
 
         def do_POST(self):
             state["count"] += 1
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            raw = _json.dumps({"choices": [{"message": {"content": "MODEL-ANSWER"}}],
+            state["last_request"] = _json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            message = {"content": content}
+            if tool_calls:
+                message = {"content": None,
+                           "tool_calls": [{"id": f"call_{i}", "type": "function",
+                                           "function": {"name": c["name"],
+                                                        "arguments": _json.dumps(c.get("arguments", {}))}}
+                                          for i, c in enumerate(tool_calls)]}
+            raw = _json.dumps({"choices": [{"message": message}],
                                "usage": {"prompt_tokens": 11, "completion_tokens": 7}}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -93,17 +100,48 @@ class GatewayTest(unittest.TestCase):
             os.environ.pop("STATE_DIR", None)
             server.install_state(self.state)
 
-    def test_no_tool_question_does_not_reach_the_model_in_a_group(self):
-        """The no-tool path is where ungrounded answers appear. In a group it must stay closed,
-        even when a provider is configured."""
+    def test_group_never_receives_ungrounded_model_text(self):
+        """With tool calling the model IS asked (it has to be, to pick a tool), so the rule is
+        not "never call the model" but "never let its unsupported prose reach a group"."""
         calls = _start_fake_model()
         os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{calls['port']}/v1"
         try:
             code, body = self.ask("thời tiết hôm nay thế nào", chat="group_internal")
             self.assertEqual(code, 200)
-            self.assertIn("chưa có công cụ", body["chat_reply"])
-            self.assertEqual(calls["count"], 0, "model was called on a no-tool group request")
-            self.assertEqual(body["usage"]["prompt_tokens"], 0)
+            self.assertEqual(body["chat_reply"], "Mình chưa có công cụ cho việc này.")
+            self.assertNotIn("MODEL-ANSWER", body["chat_reply"])
+            self.assertEqual(calls["count"], 1)          # one turn, tools offered, prose discarded
+        finally:
+            os.environ.pop("MODEL_BASE_URL", None)
+
+    def test_model_can_only_call_tools_it_was_offered(self):
+        """The load-bearing test: the model asks for a destructive tool, the gateway refuses,
+        the tool never executes, and the request never contained it in the first place."""
+        calls = _start_fake_model(tool_calls=[{"name": "deploy_prod", "arguments": {}}])
+        os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{calls['port']}/v1"
+        executed = []
+        real_call = server.tools.call
+        server.tools.call = lambda name, principal, args: executed.append(name) or real_call(name, principal, args)
+        try:
+            code, body = self.ask("deploy production now", chat="dm")
+            self.assertEqual(code, 200)
+            self.assertEqual(body["denied_tool"], "deploy_prod")
+            self.assertIn("không có quyền", body["chat_reply"])
+            self.assertEqual(executed, [], "a destructive tool was executed")
+            offered = {t["function"]["name"] for t in calls["last_request"]["tools"]}
+            self.assertNotIn("deploy_prod", offered, "deploy_prod was offered to the model")
+            self.assertIn("docs_search", offered)
+        finally:
+            server.tools.call = real_call
+            os.environ.pop("MODEL_BASE_URL", None)
+
+    def test_allowed_tool_call_executes(self):
+        calls = _start_fake_model(tool_calls=[{"name": "docs_search", "arguments": {"q": "runbook"}}])
+        os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{calls['port']}/v1"
+        try:
+            code, body = self.ask("tìm giúp tôi runbook", chat="dm")
+            self.assertEqual(code, 200)
+            self.assertIn("runbook-restart", body["chat_reply"])
         finally:
             os.environ.pop("MODEL_BASE_URL", None)
 

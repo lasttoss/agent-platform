@@ -65,6 +65,28 @@ def _call_ocr(path: str) -> dict:
         return {"error": "ocr_unavailable", "detail": str(exc)[:200]}
 
 
+# Argument schemas. Kept here, next to the implementation, so a tool cannot exist without
+# a stated interface — and so the model can only be offered parameters we actually parse.
+PARAMS = {
+    "salary_self": {"type": "object", "properties": {}},
+    "docs_search": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+    "status": {"type": "object", "properties": {}},
+    "ocr_extract": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+    "drive_search": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+    "jira_search": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+    "mail_list": {"type": "object", "properties": {}},
+}
+
+
+def schema(name: str) -> dict:
+    """OpenAI-shaped tool definition. This is the ONLY thing the model is ever told about,
+    so the visible list and the offered list can never disagree."""
+    spec = TOOLS[name]
+    params = PARAMS.get(name) or {"type": "object", "properties": {}}
+    fn = {"name": name, "description": spec["description"], "parameters": params}
+    return {"type": "function", "function": fn}
+
+
 def load_salary_overrides(values: dict | None) -> None:
     """Real amounts live in config/local.json; accepts either 40000000 or
     {"amount": 40000000, "currency": "VND"} so the file stays readable."""

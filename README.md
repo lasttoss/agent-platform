@@ -60,6 +60,30 @@ cd services/gateway && python3 cli.py --chat dm "ocr CV.pdf"
   and in each service README, and adding it does not change the boundary above.
 - The Go port of the gateway. Same `policy.json`, same tests, different runtime.
 
+## Tool calling: the tool list is the permission
+
+When a provider is configured the model chooses the tool, and it can only choose from the list
+built for that caller and that chat:
+
+```
+visible_tools(rules, principal) ∩ consent   →   request `tools: [...]`   →   model returns tool_calls
+                                                            │
+                              name not in routable_tools ────┴──→ refused, never executed
+```
+
+`deploy_prod` is dropped by the loader because it is destructive, so it is **not in the request
+at all** — the model cannot name it, and the caller cannot talk it into naming it. That is the
+difference between filtering before the model and denying after the call; the execution guard
+stays as the second line, because a model can still emit a name it was given by mistake.
+
+Two tests hold this: one fake provider asks for `deploy_prod` (refused, nothing executed, and the
+recorded request body proves it was never offered), one asks for `docs_search` (executed).
+
+The trade-off is real: with a provider configured, even a request that matches no tool costs one
+model turn, because the model is the thing choosing. That is why the cache sits **before** the
+model turn, and why `free_chat` only decides whether the model's prose may be shown — not whether
+the call happens.
+
 ## Model providers
 
 The model layer speaks the OpenAI chat-completions shape, so a router such as LiteLLM drops in

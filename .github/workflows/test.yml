@@ -18,17 +18,14 @@ jobs:
       - name: Python extras
         run: python3 -m pip install --quiet -r services/ocr/requirements.txt
 
-      # poppler is the fast path for PDF text. Runners occasionally cannot reach the Ubuntu
-      # mirror (DNS failure inside the runner network), so this step is best effort: the
-      # pypdf fallback in engines/pdf.py covers the same behaviour and the tests assert
-      # extracted text, never which engine produced it.
-      - name: Fast path for PDF text (best effort)
+      # No apt here on purpose. poppler is the fast local path; on runners the Ubuntu mirror
+      # has been unreachable (DNS inside the runner network) and `apt-get update` then hangs
+      # for minutes before failing. The pypdf fallback covers the same behaviour, and the
+      # tests assert extracted text, never which engine produced it.
+      - name: Which PDF engine is available
         run: |
-          if ! command -v pdftotext >/dev/null 2>&1; then
-            sudo apt-get update -o Acquire::Retries=3 >/dev/null 2>&1 || true
-            sudo apt-get install -y poppler-utils || echo "::warning::poppler unavailable — tests will use the pypdf fallback"
-          fi
-          command -v pdftotext || echo "pdftotext: absent (fallback in use)"
+          if command -v pdftotext >/dev/null 2>&1; then pdftotext -v 2>&1 | head -1;
+          else echo "poppler absent — the pypdf fallback will be used"; fi
 
       - name: Generate OCR fixtures (synthetic, never committed)
         run: python3 services/ocr/samples/make_samples.py

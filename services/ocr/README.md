@@ -3,6 +3,22 @@
 One tool, one contract, hard guards. This is the "worker" in
 `agent-gateway → HTTP → tool service`; it has no idea who is calling and no authority.
 
+## Two ways in: now, and "queue it"
+
+A scan takes 2–5 s per file, so ten files in one HTTP call is a 30–50 s request that times out
+somewhere in the middle and loses the work. The queue makes progress durable:
+
+```
+POST /v1/ocr      {"path": "samples/x.pdf"}          → 200 with the result (one file, fast path)
+POST /v1/jobs     {"path": "samples/x.pdf"}          → 202 {"id", "status": "queued", "poll"}
+GET  /v1/jobs/<id>                                    → status: queued | running | done | failed | expired
+```
+
+Retention is part of the contract, not an afterthought: extracted text is somebody else's
+document, so it is deleted after `JOBS_TTL_S` (default 3600) and the job row becomes `expired`
+with a note — the caller learns "the text is gone", never "job not found". A full queue answers
+`503 queue_full` and marks the job rejected; nothing is silently dropped.
+
 ## Contract
 
 ```

@@ -236,3 +236,11 @@ a key, a money literal that is not one of the counting-pattern fixtures, or any 
 Verified by staging a fake token, a real-looking id and a plausible amount: all three were
 refused. The hook is a backstop, not the rule — the rule is that real values have one home,
 `config/local.json`, and it is gitignored.
+
+## Tests
+
+```
+make test     # 57 tests: 42 gateway/cache/adapter, 15 ocr (incl. the job queue), no keys, no network
+```
+CI runs the same command on every push (`.github/workflows/test.yml`); the only system dependency
+is poppler for the PDF text layer, and the OCR fixtures are generated, never committed.

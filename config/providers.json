@@ -9,29 +9,55 @@
   "google_drive": {
     "auth": "oauth2_per_user",
     "held_by": "gateway",
-    "scopes": ["drive.readonly", "drive.file"],
+    "scopes": [
+      "drive.readonly",
+      "drive.file"
+    ],
     "rate_limit": "60/min/user",
-    "tools": ["drive_search", "drive_read"]
+    "tools": [
+      "drive_search",
+      "drive_read"
+    ]
   },
   "jira": {
     "auth": "pat_per_user",
     "held_by": "gateway",
-    "scopes": ["read:jira-work"],
+    "scopes": [
+      "read:jira-work"
+    ],
     "rate_limit": "120/min/user",
-    "tools": ["jira_search"]
+    "tools": [
+      "jira_search"
+    ]
   },
   "imap": {
     "auth": "app_password_per_user",
     "held_by": "gateway",
-    "scopes": ["mail.read"],
+    "scopes": [
+      "mail.read"
+    ],
     "rate_limit": "30/min/user",
-    "tools": ["mail_list", "mail_fetch"]
+    "tools": [
+      "mail_list",
+      "mail_fetch"
+    ]
   },
   "local_ocr": {
     "auth": "none",
     "held_by": "worker",
     "scopes": [],
     "rate_limit": "60/min",
-    "tools": ["ocr_extract"]
+    "tools": [
+      "ocr_extract"
+    ]
+  },
+  "litellm": {
+    "auth": "bearer_master_key",
+    "held_by": "gateway",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "scopes": [],
+    "rate_limit": "per proxy config",
+    "tools": [],
+    "notes": "OpenAI-compatible router in front of Anthropic/OpenAI/Gemini. The gateway keeps tool authorization; the proxy only routes, retries and accounts for spend."
   }
 }

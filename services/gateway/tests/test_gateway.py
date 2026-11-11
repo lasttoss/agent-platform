@@ -121,6 +121,45 @@ class GatewayTest(unittest.TestCase):
         finally:
             os.environ.pop("MODEL_BASE_URL", None)
 
+    def test_llm_proxy_base_url_with_path_prefix(self):
+        """LiteLLM and friends expose OpenAI-compatible endpoints under /v1 on their own port.
+        The gateway must build <base>/chat/completions and not mangle a trailing slash."""
+        import json as _json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        seen = {}
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                seen["path"] = self.path
+                seen["auth"] = self.headers.get("Authorization", "")
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                raw = _json.dumps({"choices": [{"message": {"content": "PROXY-ANSWER"}}],
+                                   "usage": {"prompt_tokens": 3, "completion_tokens": 2}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{port}/v1/"     # trailing slash on purpose
+        os.environ["MODEL_API_KEY"] = "sk-test"
+        try:
+            code, body = self.ask("thời tiết hôm nay thế nào", chat="dm")
+            self.assertEqual(code, 200)
+            self.assertEqual(body["chat_reply"], "PROXY-ANSWER")
+            self.assertEqual(seen["path"], "/v1/chat/completions")
+            self.assertTrue(seen["auth"].startswith("Bearer "))
+        finally:
+            os.environ.pop("MODEL_BASE_URL", None)
+            os.environ.pop("MODEL_API_KEY", None)
+
     def test_free_chat_is_opt_in_per_chat(self):
         rules = policy.load_rules(self.policy_path)
         dm = policy.resolve(rules, "1001", "dm")

@@ -60,6 +60,28 @@ cd services/gateway && python3 cli.py --chat dm "ocr CV.pdf"
   and in each service README, and adding it does not change the boundary above.
 - The Go port of the gateway. Same `policy.json`, same tests, different runtime.
 
+## Model providers
+
+The model layer speaks the OpenAI chat-completions shape, so a router such as LiteLLM drops in
+without a code change:
+
+```bash
+MODEL_BASE_URL=http://127.0.0.1:4000/v1   # LiteLLM proxy: /v1/chat/completions
+MODEL_API_KEY=<litellm master key>        # the gateway is the only holder, as with any provider
+MODEL_NAME=claude-sonnet-4-5              # whatever alias the proxy exposes
+```
+
+Division of labour, so the two never blur:
+
+| Concern | Owner |
+|---|---|
+| who may call which tool, in which chat | **gateway** (policy + consent + execution guard) |
+| which provider answers, retries, fallbacks, spend per key | proxy (LiteLLM) |
+| where the provider key lives | gateway only; the proxy holds its own master key |
+
+`test_llm_proxy_base_url_with_path_prefix` pins the part that breaks in practice: a base URL with
+a path prefix and a trailing slash must still produce `/v1/chat/completions`, with a bearer header.
+
 ## When no tool matches
 
 The gateway does not fall back to ungrounded chat by default. A request that matches no tool

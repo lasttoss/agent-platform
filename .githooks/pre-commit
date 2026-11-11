@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Blocks the four things that actually leak in a demo repo: credentials, real platform ids,
+# real money, and runtime state that happens to contain the first two.
+set -u
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+fail=0
+say() { printf '  %s\n' "$1"; fail=1; }
+
+for f in $staged; do
+  case "$f" in
+    state/*|*/state/*|*.db|*.log|*/__pycache__/*|config/local.json|*/samples/*.pdf|*/samples/*.png)
+      say "runtime/private file staged: $f"; continue;;
+  esac
+  [ -f "$f" ] || continue
+  case "$f" in *.png|*.jpg|*.jpeg) continue;; esac
+  text=$(cat "$f")
+
+  grep -nEq '[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}' <<<"$text"          && say "telegram bot token in $f"
+  grep -nEq '\b(sk|ghp|gho|ghu|ghs)_[A-Za-z0-9]{16,}' <<<"$text"     && say "api/github token in $f"
+  grep -nEq '\bAKIA[0-9A-Z]{16}\b' <<<"$text"                        && say "aws key in $f"
+  grep -nEq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' <<<"$text"       && say "private key in $f"
+  grep -nEiq '(password|passwd|secret|api_key|token)[[:space:]]*[:=][[:space:]]*[^[:space:]"'"'"']{6,}' <<<"$text" \
+    && say "hardcoded credential in $f"
+  grep -nEq '"/?[0-9]{8,10}"[[:space:]]*:' <<<"$text"                && say "real-looking platform id as a key in $f"
+  grep -nEq '/home/[A-Za-z0-9._-]+/' <<<"$text"                      && say "absolute home path in $f"
+
+  # money: allow only the counting-pattern fixtures, so a real amount cannot slip in
+  for m in $(grep -oE '[0-9]{2,3}[.,_][0-9]{3}[.,_][0-9]{3}' <<<"$text" | tr ',' '.' | sort -u); do
+    case "$m" in
+      12.345.000|9.876.000|1.234.000|1.357.400) ;;
+      *) say "money literal that is not a fixture: $m in $f";;
+    esac
+  done
+done
+
+if [ "$fail" -ne 0 ]; then
+  printf '\ncommit blocked. Fix the lines above, or move real values to config/local.json (gitignored).\n'
+  exit 1
+fi

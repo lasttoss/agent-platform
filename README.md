@@ -149,3 +149,18 @@ fixtures. A guard is cheaper than remembering.
 cat services/gateway/config/policy.json | python3 -m json.tool | head
 cat config/local.json          # gitignored; not in git history
 ```
+
+## Pre-commit guard
+
+```bash
+git config core.hooksPath .githooks     # once per clone
+```
+
+`.githooks/pre-commit` blocks a commit when the staged diff contains a bot token, an API key,
+a private key, a hardcoded credential, an absolute home path, a platform id of 8+ digits used as
+a key, a money literal that is not one of the counting-pattern fixtures, or any runtime file
+(`state/`, `*.db`, `*.log`, `config/local.json`, generated samples).
+
+Verified by staging a fake token, a real-looking id and a plausible amount: all three were
+refused. The hook is a backstop, not the rule — the rule is that real values have one home,
+`config/local.json`, and it is gitignored.

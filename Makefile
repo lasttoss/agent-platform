@@ -3,7 +3,7 @@ PY := python3
 .PHONY: test samples test-gateway test-ocr test-model test-userdir test-audit test-go parity \
 	run-gateway run-gateway-go run-ts-example run-mcp-demo run-model run-ocr run-userdir \
 	run-audit-sink
-	run-adapter demo-adapter check-users
+	run-adapter demo-adapter check-users compose-up compose-down compose-logs compose-smoke
 
 test: samples test-gateway test-ocr test-model test-userdir test-audit test-go
 
@@ -74,3 +74,17 @@ run-audit-sink:
 # Compares the user directory with policy.json and exits non-zero on a mismatch.
 check-users:
 	cd services/gateway-go && go run . -check-users -refresh 0
+
+# The whole platform as separate processes, with Postgres, one command.
+compose-up:
+	docker compose -f deploy/compose/docker-compose.yml up --build -d
+	@echo "gateway: http://127.0.0.1:8090/v1/whoami?user=1001&chat=dm"
+
+compose-down:
+	docker compose -f deploy/compose/docker-compose.yml down -v
+
+compose-smoke:
+	bash scripts/compose_smoke.sh
+
+compose-logs:
+	docker compose -f deploy/compose/docker-compose.yml logs -f --tail=50

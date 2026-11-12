@@ -36,7 +36,11 @@ DB_PATH = Path(os.environ.get("USERDIR_DB", ROOT / "state" / "users.db"))
 PORT = int(os.environ.get("PORT", "8093"))
 # Loopback by default: a directory that lists who exists should not be reachable from the
 # network because somebody forgot a flag. Containers and other hosts must say so explicitly.
-HOST = os.environ.get("USERDIR_HOST", "127.0.0.1")
+# Two names for one knob: `HOST` is the convention the other services and the compose file use,
+# `USERDIR_HOST` stays for existing deployments. A container that reads only its own private
+# variable name binds to loopback and looks healthy from inside while being unreachable from the
+# network next to it.
+HOST = os.environ.get("USERDIR_HOST") or os.environ.get("HOST") or "127.0.0.1"
 MAX_BYTES = 64 * 1024
 
 # Two schemas, spelled out, instead of one string with a replace() over it. The first attempt at

@@ -1,0 +1,179 @@
+# The whole platform, one command:
+#
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   curl -s localhost:8090/v1/whoami?user=1001\&chat=dm | jq
+#
+# What this file is for: proving the services are separable. Every process here is something that
+# runs and dies on its own, talks MCP over the network, and has no compile-time relationship with
+# the others. The single-host Makefile targets stay the fast path for development; this is the
+# honest answer to "does it actually run as more than one process on more than one machine".
+name: agent-platform
+
+x-python: &python
+  build:
+    context: ../..
+    dockerfile: deploy/compose/Dockerfile.python
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-agent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-agent}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  userdir:
+    <<: *python
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.python
+      args:
+        SERVICE: userdir
+        NEEDS_PSYCOPG: "1"
+    environment:
+      PORT: "8093"
+      USERDIR_DSN: postgresql://postgres:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-agent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8093/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports: ["8093:8093"]
+
+  audit-sink:
+    <<: *python
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.python
+      args:
+        SERVICE: audit-sink
+    environment:
+      PORT: "8096"
+      AUDIT_DB: /app/state/audit.db
+    volumes:
+      - auditdb:/app/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8096/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports: ["8096:8096"]
+
+  ocr:
+    <<: *python
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.python
+      args:
+        SERVICE: ocr
+        NEEDS_POPPLER: "1"
+    environment:
+      PORT: "8099"
+      JOBS_DB: /app/state/jobs.db
+      OCR_WORKERS: "2"
+    volumes:
+      - ocrstate:/app/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8099/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports: ["8099:8099"]
+
+  model-mcp:
+    <<: *python
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.python
+      args:
+        SERVICE: model-mcp
+    environment:
+      PORT: "8097"
+      # No provider configured: the model service answers an empty turn instead of inventing one.
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_NAME: ${MODEL_NAME:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8097/health',timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports: ["8097:8097"]
+
+  mcp-ts-example:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.node
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8095/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports: ["8095:8095"]
+
+  mcp-demo:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.go
+    command: ["/usr/local/bin/mcp-demo", "-addr", "0.0.0.0:8091"]
+    environment:
+      ADDR: 0.0.0.0:8091
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports: ["8091:8091"]
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.go
+    command:
+      - /usr/local/bin/gateway
+      - -addr=0.0.0.0:8090
+      - -policy=/repo-config/policy.json
+      - -consent=/repo-config/consent.json
+      - -tools=/config/tools.json
+      - -mcp=/config/mcp.json
+      - -audit=/state/audit.jsonl
+      - -refresh=30s
+    environment:
+      AUDIT_SINK_URL: http://audit-sink:8096/v1/audit
+      # Unset by default so the stack is runnable without secrets. Set it and the gateway requires
+      # X-Adapter-Token on /v1/respond and /v1/whoami.
+      ADAPTER_TOKEN: ${ADAPTER_TOKEN:-}
+    volumes:
+      # policy.json and consent.json are the repository's files, mounted rather than copied: two
+      # copies of an authorization table is a drift bug waiting to be shipped.
+      - ../../services/gateway/config:/repo-config:ro
+      - ./config:/config:ro
+      - gatewaystate:/state
+    depends_on:
+      mcp-demo:
+        condition: service_healthy
+      userdir:
+        condition: service_healthy
+      ocr:
+        condition: service_healthy
+      model-mcp:
+        condition: service_healthy
+      audit-sink:
+        condition: service_healthy
+    ports: ["8090:8090"]
+
+volumes:
+  pgdata:
+  auditdb:
+  ocrstate:
+  gatewaystate:

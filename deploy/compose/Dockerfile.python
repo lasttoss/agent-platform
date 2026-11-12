@@ -1,0 +1,18 @@
+# The Python services share a base because they share a shape: stdlib HTTP server, one file, no
+# framework. `SERVICE` picks which one to run, so the four images differ by one build arg instead
+# of four near-identical Dockerfiles.
+FROM python:3.12-slim
+ARG SERVICE
+ARG NEEDS_POPPLER=0
+ARG NEEDS_PSYCOPG=0
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends ${NEEDS_POPPLER:+poppler-utils} >/dev/null \
+ && rm -rf /var/lib/apt/lists/*
+RUN if [ "$NEEDS_PSYCOPG" = "1" ]; then pip install --no-cache-dir "psycopg[binary]>=3.1"; fi
+RUN useradd -u 10001 -m app
+WORKDIR /app
+COPY services/${SERVICE}/ /app/
+RUN mkdir -p /app/state && chown -R app /app
+USER app
+ENV HOST=0.0.0.0 PYTHONUNBUFFERED=1
+CMD ["python", "server.py"]

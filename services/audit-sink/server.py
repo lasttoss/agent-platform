@@ -27,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("AUDIT_DB", ROOT / "state" / "audit.db"))
 PORT = int(os.environ.get("PORT", "8096"))
-HOST = os.environ.get("AUDIT_HOST", "127.0.0.1")
+HOST = os.environ.get("AUDIT_HOST") or os.environ.get("HOST") or "127.0.0.1"
 MAX_BYTES = 512 * 1024
 
 SCHEMA = """

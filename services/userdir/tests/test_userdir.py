@@ -79,3 +79,29 @@ class DirectoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BindAddressTests(unittest.TestCase):
+    """A container that binds loopback answers its own healthcheck and nothing else. That is how a
+    service can be "healthy" and unreachable at the same time, which cost a debugging session."""
+
+    def test_the_shared_host_variable_is_honoured(self) -> None:
+        import importlib
+
+        os.environ["HOST"] = "0.0.0.0"
+        os.environ.pop("USERDIR_HOST", None)
+        os.environ["USERDIR_DB"] = str(Path(tempfile.mkdtemp()) / "u.db")
+        sys.modules.pop("server", None)
+        mod = importlib.import_module("server")
+        self.assertEqual(mod.HOST, "0.0.0.0")
+        os.environ.pop("HOST", None)
+
+    def test_loopback_is_still_the_default(self) -> None:
+        import importlib
+
+        os.environ.pop("HOST", None)
+        os.environ.pop("USERDIR_HOST", None)
+        os.environ["USERDIR_DB"] = str(Path(tempfile.mkdtemp()) / "u.db")
+        sys.modules.pop("server", None)
+        mod = importlib.import_module("server")
+        self.assertEqual(mod.HOST, "127.0.0.1")

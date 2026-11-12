@@ -29,7 +29,8 @@
         "docs_search",
         "status",
         "ocr_extract",
-        "ocr_result"
+        "ocr_result",
+        "wiki_search"
       ]
     },
     "guest": {
@@ -49,7 +50,8 @@
         "ocr_result",
         "drive_search",
         "jira_search",
-        "mail_list"
+        "mail_list",
+        "wiki_search"
       ],
       "personal_data": true,
       "private_tools": [],

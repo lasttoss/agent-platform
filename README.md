@@ -260,8 +260,8 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 138 tests: 54 gateway-go, 45 Python reference gateway, 21 ocr, 6 userdir,
-              #            5 audit-sink, 5 model service
+make test     # 140 tests: 54 gateway-go, 45 Python reference gateway, 21 ocr, 8 userdir,
+              #            7 audit-sink, 5 model service
 make parity   # starts both gateways + the MCP services, diffs the decisions (10 + 60 generated)
 PARITY_FUZZ=300 python3 scripts/parity.py   # same, 300 generated cases
 ```
@@ -480,6 +480,46 @@ Three rules keep the directory from becoming a silent widening:
 What this does not prove: the Postgres path is exercised in this repo through `psql` (schema,
 upsert, disable), not through the Python driver, which is not installed on the machine this was
 built on. The SQL is verified; the binding is not.
+
+## The whole platform in containers
+
+```bash
+make compose-up        # build + start every process and Postgres
+bash scripts/compose_smoke.sh          # assert every claim below, end to end
+make compose-down      # stop and remove volumes
+```
+
+Eight containers, no shared runtime: `gateway` (Go), `mcp-demo` (Go tool service), `ocr` (Python +
+poppler), `model-mcp` (Python), `userdir` (Python + psycopg → `postgres`), `audit-sink` (Python),
+`mcp-ts-example` (Node), `postgres` (the user directory only).
+
+What the smoke script proves, in order:
+
+```
+directory source is the service, not policy.json   (Postgres reached, 30s refresh picked it up)
+dm status 200, answer from the Go tool service      (gateway → mcp-demo over the container network)
+public group: "I have no tool for that."            (policy, not a service decision)
+disabled user: 403 user_disabled                    (Postgres says no)
+unknown user: 403 user_not_in_directory             (the two systems disagree)
+wiki_search answered                                (a tool served by the TypeScript process)
+extraction queued, then read back                   (async job across two containers)
+audit sink aggregated every event                   (18 events, 3 users, one view)
+```
+
+Three things this exercise taught, all of them invisible on one host:
+
+1. **`depends_on: service_started` is not readiness.** The gateway booted, found `userdir`
+   unreachable, fell back to policy.json, and only picked the directory up on the next 30-second
+   tick. That is the timer working as designed — but it is also why the smoke script waits for
+   `directory.source == "userdir"` instead of trusting "container started".
+2. **a healthcheck inside a container proves nothing about reachability.** `userdir` answered
+   `127.0.0.1:8093/health` while being bound to loopback and therefore invisible to every other
+   container, with a green health status the whole time. Binding is now one convention (`HOST`,
+   loopback by default) across every Python service, and the smoke script checks from outside.
+3. **a port already in use leaves a container created but unattached.** `docker compose up` then
+   gave `restart: unless-stopped` a container with no network at all, which presents as a DNS
+   failure (`failed to resolve host 'postgres'`) rather than as a port conflict. `--force-recreate`
+   fixes it; the README says so because it cost a debugging session.
 
 ## One audit view, several gateways
 

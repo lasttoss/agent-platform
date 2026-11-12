@@ -6,12 +6,17 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/lasttoss/agent-platform/services/gateway-go/internal/demotools"
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8091", "listen address")
+	defaultAddr := "127.0.0.1:8091"
+	if v := os.Getenv("ADDR"); v != "" { // containers: ADDR=0.0.0.0:8091
+		defaultAddr = v
+	}
+	addr := flag.String("addr", defaultAddr, "listen address")
 	localPath := flag.String("local", "", "optional gitignored salary overrides")
 	// A real tool service is not infinitely parallel: it has a worker pool and a call that takes
 	// time. Both are flags so the gateway can be measured against a downstream that pushes back.
@@ -26,7 +31,9 @@ func main() {
 		}
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", demotools.Handler())
+	handler := demotools.Handler()
+	mux.Handle("/mcp", handler)
+	mux.Handle("/health", handler) // answered by the same handler: GET /health → {"ok":true}
 	log.Printf("demo tool service on http://%s/mcp", *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }

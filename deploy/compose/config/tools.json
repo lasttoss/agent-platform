@@ -1,0 +1,82 @@
+{
+  "deploy_prod": {
+    "description": "Deploy to production. Never exposed to chat.",
+    "destructive": true,
+    "ttl": 0
+  },
+  "docs_search": {
+    "description": "Search internal documents.",
+    "max_in_flight": 8,
+    "ttl": 3600
+  },
+  "drive_search": {
+    "description": "Search the caller's own Drive.",
+    "personal": true,
+    "provider": "google_drive",
+    "scope": "drive.readonly",
+    "ttl": 300
+  },
+  "jira_search": {
+    "description": "Search Jira issues.",
+    "provider": "jira",
+    "scope": "read:jira-work",
+    "ttl": 600
+  },
+  "mail_list": {
+    "description": "List recent mail for the caller.",
+    "personal": true,
+    "provider": "imap",
+    "scope": "mail.read",
+    "ttl": 0
+  },
+  "ocr_extract": {
+    "description": "Submit a document for text extraction; returns a job id.",
+    "max_in_flight": 4,
+    "personal": true,
+    "provider": "local_ocr",
+    "ttl": 0
+  },
+  "ocr_result": {
+    "description": "Read the result of a submitted extraction job.",
+    "max_in_flight": 16,
+    "personal": true,
+    "provider": "local_ocr",
+    "ttl": 0
+  },
+  "salary_self": {
+    "description": "Return the salary record of the caller.",
+    "max_in_flight": 8,
+    "personal": true,
+    "ttl": 0
+  },
+  "status": {
+    "description": "Return service health.",
+    "max_in_flight": 16,
+    "ttl": 30
+  },
+  "user_consistency": {
+    "description": "Compare the user directory with another system's ids.",
+    "max_in_flight": 1,
+    "personal": false,
+    "ttl": 0
+  },
+  "user_list": {
+    "description": "List the user directory (gateway-internal).",
+    "max_in_flight": 2,
+    "personal": false,
+    "ttl": 0
+  },
+  "user_set_active": {
+    "description": "Enable or disable a user.",
+    "destructive": true,
+    "max_in_flight": 1,
+    "personal": false,
+    "ttl": 0
+  },
+  "wiki_search": {
+    "description": "Search the project wiki.",
+    "max_in_flight": 8,
+    "personal": false,
+    "ttl": 0
+  }
+}

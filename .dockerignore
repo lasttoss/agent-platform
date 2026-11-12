@@ -1,0 +1,6 @@
+.git
+**/state
+**/__pycache__
+**/*.db
+**/samples/*.pdf
+**/node_modules

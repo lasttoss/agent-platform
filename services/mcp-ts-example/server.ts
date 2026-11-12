@@ -66,6 +66,13 @@ function handle(body: Json): Json | null {
 
 const port = Number(process.env.PORT ?? 8095);
 const server = createServer((req, res) => {
+  // A health endpoint is not decoration: the gateway probes it before re-reading tools/list, so a
+  // service without one is a service whose liveness has to be guessed.
+  if (req.method === "GET" && (req.url ?? "/") === "/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, service: "mcp-ts-example" }));
+    return;
+  }
   if (req.method !== "POST" || (req.url ?? "").replace(/\/$/, "") !== "/mcp") {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
@@ -108,6 +115,6 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(port, "127.0.0.1", () => {
+server.listen(port, process.env.HOST ?? "127.0.0.1", () => {
   console.log(`wiki-ts MCP service on http://127.0.0.1:${port}/mcp`);
 });

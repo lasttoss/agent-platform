@@ -34,6 +34,9 @@ var intents = []intent{
 	{[]string{"trang thai", "status", "health"}, "status"},
 	// Reading a job back is a second turn by design: extraction is slow, a chat reply is not.
 	{[]string{"ket qua", "result", "xong chua", "job"}, "ocr_result"},
+	// A tool served by a TypeScript process: the intent table is the only place the gateway
+	// mentions it, and that is the point.
+	{[]string{"wiki", "tai lieu du an", "adr"}, "wiki_search"},
 }
 
 var pathRE = regexp.MustCompile(`[\w./-]+\.(?:pdf|png|jpe?g|tiff?|bmp|webp)`)

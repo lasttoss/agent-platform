@@ -134,10 +134,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(port: int = 8097) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    # Loopback by default; a container must opt in with HOST=0.0.0.0.
+    return ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), port), Handler)
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8097"))
-    print(f"model-mcp on http://127.0.0.1:{port}/mcp")
+    print(f"model-mcp on :{port}/mcp")
     make_server(port).serve_forever()

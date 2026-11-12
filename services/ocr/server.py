@@ -159,10 +159,11 @@ def make_server(port: int = 8099, root: str | None = None) -> ThreadingHTTPServe
     global ROOT
     if root:
         ROOT = Path(root).resolve()
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    # Loopback by default; containers and other hosts say HOST=0.0.0.0 explicitly.
+    return ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), port), Handler)
 
 
 if __name__ == "__main__":
     srv = make_server(int(os.environ.get("PORT", "8099")))
-    print(f"ocr tool service on http://127.0.0.1:{srv.server_address[1]}  root={ROOT}")
+    print(f"ocr tool service on {srv.server_address[0]}:{srv.server_address[1]}  root={ROOT}")
     srv.serve_forever()

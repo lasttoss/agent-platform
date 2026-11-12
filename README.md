@@ -274,6 +274,18 @@ number explains most of the table: the Python reference commits to sqlite on eve
 durable cache), the Go gateway keeps an in-memory map behind a mutex. The rest is the global lock
 that makes the shared sqlite connection safe.
 
+Footprint, same laptop (RSS from `ps`, binary from `ls`):
+
+```
+go gateway            binary 8.7 MB   idle 8.6 MB RSS   14.9 MB after 3200 requests at 32 clients
+python reference      —             idle 25.6 MB RSS
+node 22 bare http     —             idle 44.8 MB RSS   (an empty server returning {"ok":true})
+```
+
+The Node row is a *bare* server; the gateway rows do policy, cache and audit. It is in the table
+because "typed JS is the light choice for a proxy" is a claim worth testing rather than
+repeating — the runtime is the weight.
+
 **What this does not prove.** Nothing about Go versus Python as languages, and nothing about
 event loops: both gateways are non-blocking at the socket layer. It measures two designs, one of
 which pays fsync per request. It is also why the Go cache is documented as in-memory — that is a

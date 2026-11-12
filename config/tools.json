@@ -2,21 +2,25 @@
   "salary_self": {
     "personal": true,
     "ttl": 0,
-    "description": "Return the salary record of the caller."
+    "description": "Return the salary record of the caller.",
+    "max_in_flight": 8
   },
   "docs_search": {
     "ttl": 3600,
-    "description": "Search internal documents."
+    "description": "Search internal documents.",
+    "max_in_flight": 8
   },
   "status": {
     "ttl": 30,
-    "description": "Return service health."
+    "description": "Return service health.",
+    "max_in_flight": 16
   },
   "ocr_extract": {
     "personal": true,
     "provider": "local_ocr",
     "ttl": 86400,
-    "description": "Extract text from a document."
+    "description": "Extract text from a document.",
+    "max_in_flight": 4
   },
   "drive_search": {
     "personal": true,

@@ -288,6 +288,28 @@ The Node row is a *bare* server; the gateway rows do policy, cache and audit. It
 because "typed JS is the light choice for a proxy" is a claim worth testing rather than
 repeating — the runtime is the weight.
 
+### Goroutines are cheap; the queue is not
+
+"Coroutines are light, so concurrency is free" is true about the scheduler and false about the
+system. Measured against a downstream that behaves like a real tool service — one worker, 200 ms
+per call, so 5 calls/s — with 20 questions from 20 clients at once:
+
+```
+max_in_flight     wall    p50      p95      p99      outcomes
+none              4.01s   2007ms   3815ms   3815ms   20 × 200 (everyone waits 4 s for a 200 ms call)
+4                 0.80s      0.9ms  602ms    602ms   4 × 200, 16 × 503 in ~1 ms
+8                 1.60s      1.4ms 1405ms   1405ms   8 × 200, 12 × 503 in ~1 ms
+```
+
+Goroutines did not remove the queue; they let the gateway accept it. The waiting moved from
+inside the service to inside the caller, and the caller had no way to know. `max_in_flight` lives
+in `config/tools.json`, the shed answer is `503 service_busy`, and the audit log records
+`decision: "shed"` — the same shape as a deliberate refusal, because it is one.
+
+`0` means unlimited, which is a decision to prefer accepting over answering. The defaults here
+are 8 for `salary_self`/`docs_search`, 4 for `ocr_extract` (a PDF engine is the most expensive
+thing in the repo) and 16 for `status`.
+
 **What this does not prove.** Nothing about Go versus Python as languages, and nothing about
 event loops: both gateways are non-blocking at the socket layer. It measures two designs, one of
 which pays fsync per request. It is also why the Go cache is documented as in-memory — that is a

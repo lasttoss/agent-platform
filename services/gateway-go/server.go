@@ -38,11 +38,12 @@ type Server struct {
 
 	mu    sync.Mutex
 	usage map[string]map[string]int // userID → {"requests", "tokens"}
+	sems  map[string]chan struct{}  // tool → in-flight slots (see acquire)
 }
 
 func NewServer(p *Policy, consent map[string]map[string][]string, reg *Registry, auditPath string) *Server {
 	return &Server{Policy: p, Consent: consent, Reg: reg, Cache: NewCache(), Audit: auditPath,
-		usage: map[string]map[string]int{}}
+		usage: map[string]map[string]int{}, sems: map[string]chan struct{}{}}
 }
 
 type respondRequest struct {
@@ -91,6 +92,27 @@ func (s *Server) overQuota(userID string) bool {
 	defer s.mu.Unlock()
 	u := s.usage[userID]
 	return u["requests"] >= s.Policy.Quota.RequestsPerDay || u["tokens"] >= s.Policy.Quota.TokensPerDay
+}
+
+// acquire takes an in-flight slot or reports that the tool is saturated. It never waits: a
+// gateway that queues turns a slow service into a slow caller, and turns a burst into a timeout.
+func (s *Server) acquire(tool string, limit int) (func(), bool) {
+	if limit <= 0 {
+		return func() {}, true
+	}
+	s.mu.Lock()
+	sem, ok := s.sems[tool]
+	if !ok {
+		sem = make(chan struct{}, limit)
+		s.sems[tool] = sem
+	}
+	s.mu.Unlock()
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, true
+	default:
+		return nil, false
+	}
 }
 
 func pickTool(text string) (string, map[string]any, bool) {
@@ -234,6 +256,15 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 			"decision": "denied", "code": d.Code, "tool": tool})
 		return 403, map[string]any{"denied": map[string]any{"code": d.Code, "reason": d.Message}}
 	}
+
+	release, admitted := s.acquire(tool, meta.MaxInFlight)
+	if !admitted {
+		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+			"decision": "shed", "tool": tool, "reason": "in_flight_limit"})
+		return 503, map[string]any{"denied": map[string]any{
+			"code": "service_busy", "reason": "too many calls in flight for " + tool}}
+	}
+	defer release()
 
 	// The gateway executes nothing itself: one MCP call, same shape for every capability.
 	result, callErr := s.Reg.CallTool(tool, args, pal.UserID)

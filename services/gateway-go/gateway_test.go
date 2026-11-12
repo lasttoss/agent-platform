@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lasttoss/agent-platform/services/gateway-go/internal/demotools"
 	"github.com/lasttoss/agent-platform/services/gateway-go/internal/mcpserver"
@@ -537,4 +538,57 @@ func TestAToolFromAnotherLanguageIsReachableWithoutGatewayCode(t *testing.T) {
 	if body["chat_reply"] != "Kết quả: adr-cache" {
 		t.Fatalf("a tool from another service did not answer: %v", body["chat_reply"])
 	}
+}
+
+// A saturated tool must be refused in milliseconds, not queued for seconds: the caller learns
+// the truth and the downstream is not flooded with work it cannot finish.
+func TestSaturatedToolShedsInsteadOfQueueing(t *testing.T) {
+	// A slow-but-finishing service, not a blocked one: a handler that waits forever makes
+	// httptest.Close wait forever, and a test that hangs proves nothing.
+	slow := httptest.NewServer(&mcpserver.Handler{
+		Name:  "slow",
+		Tools: []mcpserver.Tool{{Name: "docs_search", InputSchema: map[string]any{"type": "object"}}},
+		Call: func(string, map[string]any, *http.Request) (any, error) {
+			time.Sleep(800 * time.Millisecond)
+			return map[string]any{"hits": []any{}}, nil
+		}})
+	defer slow.Close()
+
+	pol, err := LoadPolicy(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consent, _ := LoadConsent(consentPath)
+	reg := NewRegistry(map[string]ToolMeta{"docs_search": {MaxInFlight: 2}},
+		[]ServerConf{{Name: "slow", URL: slow.URL + "/mcp"}})
+	for _, err := range reg.Discover() {
+		t.Fatalf("discovery: %v", err)
+	}
+	srv := NewServer(pol, consent, reg, "")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ { // fill both slots
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, _ := srv.Handle(respondRequest{PlatformUserID: "1001", ChatType: "dm",
+				Text: "tài liệu runbook"})
+			if code != 200 {
+				t.Errorf("holder got %d, expected 200", code)
+			}
+		}()
+	}
+	time.Sleep(200 * time.Millisecond) // let both holders take a slot
+
+	started := time.Now()
+	code, body := srv.Handle(respondRequest{PlatformUserID: "1001", ChatType: "dm",
+		Text: "tài liệu runbook"})
+	elapsed := time.Since(started)
+	if code != 503 || body["denied"].(map[string]any)["code"] != "service_busy" {
+		t.Fatalf("expected 503 service_busy, got %d %v", code, body)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("shedding took %v: it must not wait for a slot", elapsed)
+	}
+	wg.Wait()
 }

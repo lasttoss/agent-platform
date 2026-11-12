@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/lasttoss/agent-platform/services/gateway-go/internal/fold"
 	"github.com/lasttoss/agent-platform/services/gateway-go/internal/mcpserver"
@@ -38,7 +39,35 @@ func Handler() *mcpserver.Handler {
 		}}
 }
 
+// Configure makes this service behave like a real downstream: a bounded worker pool and a call
+// that takes time. Without it, every benchmark measures an imaginary service that is infinitely
+// fast and infinitely parallel — which is exactly the assumption goroutines tempt you into.
+func Configure(workers int, delay time.Duration) {
+	Delay = delay
+	if workers > 0 {
+		bounded = make(chan struct{}, workers)
+	} else {
+		bounded = nil
+	}
+}
+
+var (
+	Delay   time.Duration
+	bounded chan struct{}
+)
+
 func Call(name string, args map[string]any, r *http.Request) (any, error) {
+	if bounded != nil {
+		bounded <- struct{}{}
+		defer func() { <-bounded }()
+	}
+	if Delay > 0 {
+		time.Sleep(Delay)
+	}
+	return call(name, args, r)
+}
+
+func call(name string, args map[string]any, r *http.Request) (any, error) {
 	switch name {
 	case "salary_self":
 		// The caller's id comes from transport, never from a tool argument:

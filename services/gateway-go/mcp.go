@@ -27,7 +27,8 @@ type ToolMeta struct {
 	Destructive bool   `json:"destructive"`
 	Provider    string `json:"provider"`
 	Scope       string `json:"scope"`
-	TTL         int    `json:"ttl"` // seconds; 0 = never cache
+	TTL         int    `json:"ttl"`           // seconds; 0 = never cache
+	MaxInFlight int    `json:"max_in_flight"` // 0 = unlimited (see README: that is a choice)
 	Description string `json:"description"`
 }
 

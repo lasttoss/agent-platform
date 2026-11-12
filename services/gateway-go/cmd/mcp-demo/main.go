@@ -13,7 +13,12 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8091", "listen address")
 	localPath := flag.String("local", "", "optional gitignored salary overrides")
+	// A real tool service is not infinitely parallel: it has a worker pool and a call that takes
+	// time. Both are flags so the gateway can be measured against a downstream that pushes back.
+	workers := flag.Int("workers", 0, "bounded worker pool size (0 = unbounded)")
+	delay := flag.Duration("delay", 0, "artificial latency per call, e.g. 50ms")
 	flag.Parse()
+	demotools.Configure(*workers, *delay)
 
 	if *localPath != "" {
 		if err := demotools.LoadLocal(*localPath); err != nil {

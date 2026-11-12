@@ -237,7 +237,10 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
     if result.get("error") in ("ocr_unavailable", "ocr_engine_missing"):
         _audit({"user": uid, "chat": chat, "tool": tool, "decision": "tool_unavailable",
                 "code": result["error"]})
-        return 503, {"denied": {"code": result["error"], "reason": result.get("detail", "")}}
+        # One code for the caller, the specific cause in the reason: two implementations cannot
+        # agree on a contract they spell differently.
+        return 503, {"denied": {"code": "service_unavailable",
+                                "reason": f"{result['error']}: {result.get('detail', '')}".strip()}}
 
     answer, usage = _render(text, tool, result, principal)
     _charge(principal["user_id"], usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0), limit_req, limit_tok)

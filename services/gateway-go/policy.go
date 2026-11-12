@@ -147,6 +147,21 @@ func ConsentAllows(pal Principal, spec ToolMeta, consent map[string]map[string][
 	return false
 }
 
+// ConfiguredFor answers "would this tool be allowed here if its service were up?" — the
+// distinction that lets a caller tell "not for me" from "broken".
+func (p *Policy) ConfiguredFor(pal Principal, tool string, meta map[string]ToolMeta,
+	consent map[string]map[string][]string) bool {
+	m, known := meta[tool]
+	if !known || m.Destructive {
+		return false
+	}
+	conf := p.chat(pal)
+	if !contains(conf.Tools, tool) && !contains(conf.PrivateTools, tool) {
+		return false
+	}
+	return ConsentAllows(pal, m, consent)
+}
+
 func (p *Policy) FreeChat(pal Principal) bool { return p.chat(pal).FreeChat }
 
 // Decide returns "call" or "private".

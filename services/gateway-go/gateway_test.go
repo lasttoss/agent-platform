@@ -456,3 +456,61 @@ func splitLines(s string) []string {
 	}
 	return out
 }
+
+// A tool that exists in policy while no service advertises it is "down", not "unheard of":
+// the two answers send an operator to different places.
+func TestConfiguredButDownToolSaysUnavailable(t *testing.T) {
+	h := newHarness(t)
+	code, body := h.Handle(respondRequest{PlatformUserID: "1001", ChatType: "dm",
+		Text: "đọc giúp tôi file samples/text.pdf"})
+	if code != 503 {
+		t.Fatalf("expected 503, got %d: %v", code, body)
+	}
+	denied := body["denied"].(map[string]any)
+	if denied["code"] != "service_unavailable" {
+		t.Fatalf("wrong code: %v", denied)
+	}
+	if calls := h.lastToolCalls(); len(calls) != 0 {
+		t.Fatalf("a down service was still called: %v", calls)
+	}
+}
+
+// "Not for this chat" and "service is down" are different answers; a public group must get the
+// first one even though the OCR service happens to be missing too.
+func TestPublicGroupGetsNoToolNotServiceDown(t *testing.T) {
+	h := newHarness(t)
+	code, body := h.Handle(respondRequest{PlatformUserID: "1001", ChatType: "group_public",
+		Text: "đọc giúp tôi file a/b/c.pdf"})
+	if code != 200 {
+		t.Fatalf("expected 200, got %d: %v", code, body)
+	}
+	if body["chat_reply"] != "Mình chưa có công cụ cho việc này." {
+		t.Fatalf("wrong answer for a chat that has no such tool: %v", body["chat_reply"])
+	}
+}
+
+// An attached model service must not cost the caller a second request slot: tokens and requests
+// are different currencies, and a quota that mixes them halves under a feature flag.
+func TestModelServiceDoesNotConsumeASecondRequestSlot(t *testing.T) {
+	h := newHarness(t, withModel(map[string]any{"content": ""}))
+	h.Policy.Quota.RequestsPerDay = 2
+	h.ok(t, "1001", "dm", "thời tiết hôm nay thế nào")
+	h.ok(t, "1001", "dm", "thời tiết ngày mai thế nào")
+	code, body := h.Handle(respondRequest{PlatformUserID: "1001", ChatType: "dm",
+		Text: "thời tiết tuần sau thế nào"})
+	if code != 429 {
+		t.Fatalf("quota should run out on the third turn, got %d: %v", code, body)
+	}
+}
+
+// Two different questions must not share one cached answer just because their bag of words is
+// close: the tool is part of the cache identity.
+func TestSemanticCacheDoesNotCrossTools(t *testing.T) {
+	h := newHarness(t)
+	h.ok(t, "1001", "dm", "trạng thái hệ thống")
+	body := h.ok(t, "1001", "dm", "tài liệu hệ thống")
+	if got := body["chat_reply"]; got != "Không tìm thấy tài liệu phù hợp." &&
+		got != "Tài liệu liên quan: runbook-restart" {
+		t.Fatalf("a status answer was reused for a documents question: %v", got)
+	}
+}

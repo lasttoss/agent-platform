@@ -294,7 +294,8 @@ class GatewayTest(unittest.TestCase):
     def test_ocr_worker_down_is_a_clean_failure(self):
         code, body = self.ask("ocr samples/text.pdf")
         self.assertEqual(code, 503)
-        self.assertEqual(body["denied"]["code"], "ocr_unavailable")
+        self.assertEqual(body["denied"]["code"], "service_unavailable")
+        self.assertIn("ocr_unavailable", body["denied"]["reason"])
 
     def test_ocr_request_in_group_goes_private(self):
         code, body = self.ask("ocr samples/text.pdf", chat="group_internal")

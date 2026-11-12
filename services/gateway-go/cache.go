@@ -34,6 +34,7 @@ type CacheEntry struct {
 
 type SemanticEntry struct {
 	Scope   string
+	Tool    string
 	Text    string
 	Vec     []float64
 	Answer  string
@@ -136,7 +137,10 @@ func (c *Cache) PutExact(key string, e CacheEntry) {
 	c.exact[key] = e
 }
 
-func (c *Cache) GetSemantic(text, scope string) (SemanticEntry, float64, bool) {
+// GetSemantic requires the same scope AND the same tool. Without the tool, short Vietnamese
+// questions collide at 0.93 (a hashed bag of words with three tokens is not much of a vector),
+// and a status answer gets served for a documents question — a wrong answer with a cache hit.
+func (c *Cache) GetSemantic(text, scope, tool string) (SemanticEntry, float64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	vec := Embed(text)
@@ -147,7 +151,7 @@ func (c *Cache) GetSemantic(text, scope string) (SemanticEntry, float64, bool) {
 			continue
 		}
 		kept = append(kept, e)
-		if e.Scope != scope {
+		if e.Scope != scope || e.Tool != tool {
 			continue
 		}
 		if sim := Cosine(vec, e.Vec); sim > bestSim {
@@ -163,13 +167,13 @@ func (c *Cache) GetSemantic(text, scope string) (SemanticEntry, float64, bool) {
 	return SemanticEntry{}, bestSim, false
 }
 
-func (c *Cache) PutSemantic(text, answer string, saved int, ttl time.Duration, scope string) {
+func (c *Cache) PutSemantic(text, answer string, saved int, ttl time.Duration, scope, tool string) {
 	if ttl == 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.semantic = append(c.semantic, SemanticEntry{Scope: scope, Text: Normalise(text),
+	c.semantic = append(c.semantic, SemanticEntry{Scope: scope, Tool: tool, Text: Normalise(text),
 		Vec: Embed(text), Answer: answer, Saved: saved, Created: time.Now(), TTL: ttl})
 }
 

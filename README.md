@@ -253,7 +253,8 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 
 ```
 make test     # 91 tests: 22 gateway-go, 43 Python reference gateway, 21 ocr, 5 model service
-make parity   # starts both gateways + the MCP services, diffs the decisions: 10/10 equal
+make parity   # starts both gateways + the MCP services, diffs the decisions (10 + 60 generated)
+PARITY_FUZZ=300 python3 scripts/parity.py   # same, 300 generated cases
 ```
 CI runs the same command on every push (`.github/workflows/test.yml`); the only system dependency
 is poppler for the PDF text layer, and the OCR fixtures are generated, never committed.
@@ -330,8 +331,18 @@ terminal is the text out of a real PDF.
 
 `services/gateway/` (Python) stays as the reference implementation the parity script compares
 against: same `policy.json`, same `consent.json`, same decisions. `scripts/parity.py` starts both
-gateways plus the MCP services and diffs ten requests on status, delivery target, answer text,
-denial code and cache layer — currently **10/10 identical**.
+gateways plus the MCP services and diffs status, delivery target, answer text, denial code and
+cache layer: **10 handwritten cases and 300 generated ones** (`PARITY_FUZZ=300`), all identical
+on the answer. Three real divergences came out of the generated set, none out of the ten I wrote:
+
+| Found by | Divergence | Fix |
+|---|---|---|
+| generated | a configured tool with its service down answered "no tool for this" | both gateways answer `503 service_unavailable` |
+| generated | each model turn also consumed a request slot, halving the daily quota | requests and tokens counted separately |
+| generated | a status answer was served for a documents question from the semantic cache | the tool is part of the semantic cache identity |
+
+That is the honest answer to "parity is all we need": parity written by hand tests the cases its
+author remembered. Parity generated from the domain vocabulary found three bugs in one afternoon.
 
 One difference is reported on every run instead of being hidden: the Go gateway lists only tools a
 running service advertises, while the Python reference still carries a built-in registry for

@@ -65,13 +65,24 @@ func (s *Server) audit(rec map[string]any) {
 	f.Write(append(raw, '\n'))
 }
 
-func (s *Server) charge(userID string, tokens int) {
+// One request slot per caller turn, tokens as they are actually spent. The two are counted
+// separately: charging a request inside the model branch halved the daily quota whenever a
+// model service was attached — a bug parity found at 300 generated cases, not at 10.
+func (s *Server) chargeRequest(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.usage[userID] == nil {
 		s.usage[userID] = map[string]int{}
 	}
 	s.usage[userID]["requests"]++
+}
+
+func (s *Server) chargeTokens(userID string, tokens int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usage[userID] == nil {
+		s.usage[userID] = map[string]int{}
+	}
 	s.usage[userID]["tokens"] += tokens
 }
 
@@ -130,6 +141,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 			"reason": "daily quota reached"}}
 	}
 
+	s.chargeRequest(pal.UserID)
 	visible := s.Policy.VisibleTools(pal, s.Reg.Meta, s.Reg, s.Consent)
 	routable := s.Policy.RoutableTools(pal, s.Reg.Meta, s.Reg, s.Consent)
 
@@ -140,20 +152,26 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	}
 	scope := scopeFor(pal, tool, s.Reg.Meta)
 	if matched && !contains(routable, tool) {
+		// Configured in policy, but no running service advertises it. Answering "I have no tool
+		// for this" would be a lie of the wrong kind: the capability exists, it is down.
+		if !s.Reg.Advertises(tool) && s.Policy.ConfiguredFor(pal, tool, s.Reg.Meta, s.Consent) {
+			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+				"decision": "tool_unavailable", "tool": tool})
+			return 503, map[string]any{"denied": map[string]any{
+				"code": "service_unavailable", "reason": "no service advertises " + tool}}
+		}
 		matched = false
 	}
 	key := ExactKey(req.Text, visible, PolicyVersion, pal.ChatType, scope)
 	if ttl > 0 {
 		if hit, ok := s.Cache.GetExact(key); ok {
-			s.charge(pal.UserID, 0)
 			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "cache_exact", "scope": scope, "tool": tool})
 			return 200, map[string]any{"delivered": "chat", "chat_reply": hit.Answer,
 				"dm": nil, "tools_visible": visible,
 				"cache": map[string]any{"layer": "exact", "saved_tokens": hit.Saved}}
 		}
-		if hit, sim, ok := s.Cache.GetSemantic(req.Text, scope); ok {
-			s.charge(pal.UserID, 0)
+		if hit, sim, ok := s.Cache.GetSemantic(req.Text, scope, tool); ok {
 			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "cache_semantic", "scope": scope, "tool": tool})
 			return 200, map[string]any{"delivered": "chat", "chat_reply": hit.Answer,
@@ -173,7 +191,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		}
 		turn, err := s.Reg.Complete(systemPrompt, req.Text, schemas)
 		if err == nil {
-			s.charge(pal.UserID, turn.PromptTokens+turn.CompletionTokens)
+			s.chargeTokens(pal.UserID, turn.PromptTokens+turn.CompletionTokens)
 			if len(turn.ToolCalls) > 0 {
 				blocked := ""
 				for _, c := range turn.ToolCalls {
@@ -201,7 +219,6 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	}
 
 	if !matched {
-		s.charge(pal.UserID, 0)
 		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "no_tool", "tools_visible": visible})
 		return 200, map[string]any{"delivered": "chat",
@@ -221,10 +238,9 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	// The gateway executes nothing itself: one MCP call, same shape for every capability.
 	result, callErr := s.Reg.CallTool(tool, args, pal.UserID)
 	answer := render(tool, result, callErr)
-	s.charge(pal.UserID, 0)
 	if ttl > 0 && callErr == nil {
 		s.Cache.PutExact(key, CacheEntry{Answer: answer, TTL: ttl})
-		s.Cache.PutSemantic(req.Text, answer, 0, ttl, scope)
+		s.Cache.PutSemantic(req.Text, answer, 0, ttl, scope, tool)
 	}
 
 	if mode == "private" {

@@ -1,0 +1,46 @@
+{
+  "salary_self": {
+    "personal": true,
+    "ttl": 0,
+    "description": "Return the salary record of the caller."
+  },
+  "docs_search": {
+    "ttl": 3600,
+    "description": "Search internal documents."
+  },
+  "status": {
+    "ttl": 30,
+    "description": "Return service health."
+  },
+  "ocr_extract": {
+    "personal": true,
+    "provider": "local_ocr",
+    "ttl": 86400,
+    "description": "Extract text from a document."
+  },
+  "drive_search": {
+    "personal": true,
+    "provider": "google_drive",
+    "scope": "drive.readonly",
+    "ttl": 300,
+    "description": "Search the caller's own Drive."
+  },
+  "jira_search": {
+    "provider": "jira",
+    "scope": "read:jira-work",
+    "ttl": 600,
+    "description": "Search Jira issues."
+  },
+  "mail_list": {
+    "personal": true,
+    "provider": "imap",
+    "scope": "mail.read",
+    "ttl": 0,
+    "description": "List recent mail for the caller."
+  },
+  "deploy_prod": {
+    "destructive": true,
+    "ttl": 0,
+    "description": "Deploy to production. Never exposed to chat."
+  }
+}

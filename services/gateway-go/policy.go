@@ -82,29 +82,48 @@ func (p *Policy) Resolve(userID, chatType string) (Principal, error) {
 func (p *Policy) chat(pal Principal) ChatConf { return p.Chats[pal.ChatType] }
 
 // VisibleTools is what the model is even told about: filtering happens here, not after a call.
-func (p *Policy) VisibleTools(pal Principal) []string {
+// A tool must clear four gates: named in the chat config, described in tools.json, not
+// destructive, and advertised by a running MCP server. Missing any one of them means the
+// model never sees it.
+// Consent lives inside this function rather than in the caller: "visible" that ignores a
+// missing grant is a list somebody can forget to filter a second time.
+func (p *Policy) VisibleTools(pal Principal, meta map[string]ToolMeta, reg *Registry,
+	consent map[string]map[string][]string) []string {
 	out := []string{}
 	for _, name := range p.chat(pal).Tools {
-		spec, ok := Tools[name]
-		if !ok || spec.Destructive {
-			continue
+		if p.maySee(pal, name, meta, reg, consent) {
+			out = append(out, name)
 		}
-		if spec.Personal && !pal.PersonalOK {
-			continue
-		}
-		out = append(out, name)
 	}
 	return out
 }
 
+func (p *Policy) maySee(pal Principal, name string, meta map[string]ToolMeta, reg *Registry,
+	consent map[string]map[string][]string) bool {
+	m, known := meta[name]
+	if !known || m.Destructive || !reg.Advertises(name) {
+		return false
+	}
+	if m.Personal && !pal.PersonalOK {
+		return false
+	}
+	return ConsentAllows(pal, m, consent)
+}
+
 // RoutableTools is what the gateway may execute: visible tools plus private-only ones
 // (personal tools that may run here but must never be posted here).
-func (p *Policy) RoutableTools(pal Principal) []string {
+func (p *Policy) RoutableTools(pal Principal, meta map[string]ToolMeta, reg *Registry,
+	consent map[string]map[string][]string) []string {
 	conf := p.chat(pal)
 	out := []string{}
 	for _, name := range append(append([]string{}, conf.Tools...), conf.PrivateTools...) {
-		spec, ok := Tools[name]
-		if !ok || spec.Destructive {
+		m, known := meta[name]
+		// A private tool is exactly the personal one that may RUN here but must not be POSTED
+		// here, so the personal check belongs to visibility, not to routability.
+		if !known || m.Destructive || !reg.Advertises(name) {
+			continue
+		}
+		if !ConsentAllows(pal, m, consent) {
 			continue
 		}
 		out = append(out, name)
@@ -114,11 +133,7 @@ func (p *Policy) RoutableTools(pal Principal) []string {
 
 // ConsentAllows: no grant means no tool. Same rule as the chat allowlist — invisible,
 // not "fails later".
-func ConsentAllows(pal Principal, tool string, consent map[string]map[string][]string) bool {
-	spec, ok := Tools[tool]
-	if !ok {
-		return false
-	}
+func ConsentAllows(pal Principal, spec ToolMeta, consent map[string]map[string][]string) bool {
 	// Mirrors gateway/policy.py: a provider tool with no required scope needs no grant.
 	if spec.Provider == "" || spec.Scope == "" {
 		return true
@@ -135,9 +150,8 @@ func ConsentAllows(pal Principal, tool string, consent map[string]map[string][]s
 func (p *Policy) FreeChat(pal Principal) bool { return p.chat(pal).FreeChat }
 
 // Decide returns "call" or "private".
-func (p *Policy) Decide(pal Principal, tool string) (string, error) {
-	spec, ok := Tools[tool]
-	if !ok {
+func (p *Policy) Decide(pal Principal, tool string, spec ToolMeta, known bool) (string, error) {
+	if !known {
 		return "", Denied{"unknown_tool", "no such tool: " + tool}
 	}
 	if spec.Destructive {
@@ -195,11 +209,10 @@ func ApplyLocal(p *Policy, consent map[string]map[string][]string, local LocalFi
 			consent[id][provider] = scopes
 		}
 	}
-	for id, amount := range local.Salary {
-		Salary[id] = amount
-	}
 }
 
+// LocalFile is the gitignored overlay: real ids, real grants. Salary is read by the demo tool
+// service, not by the gateway — the gateway never holds an amount.
 type LocalFile struct {
 	Users   map[string]User                `json:"users"`
 	Consent map[string]map[string][]string `json:"consent"`

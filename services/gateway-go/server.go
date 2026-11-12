@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,14 +14,8 @@ import (
 
 const PolicyVersion = "v1"
 
-// Cache TTL by tool. 0 means "never cache": personal data that changes, or live status.
-var TTL = map[string]time.Duration{
-	"salary_self": 0, "mail_list": 0, "status": 30 * time.Second,
-	"docs_search": time.Hour, "ocr_extract": 24 * time.Hour,
-	"drive_search": 5 * time.Minute, "jira_search": 10 * time.Minute,
-}
-
-// Match on folded text, so the intent keys are folded too: "lương" == "luong".
+// Keyword routing is the no-model path: it needs no provider, no key and no tokens.
+// Matching is on folded text, so the keys here are written without diacritics.
 type intent struct {
 	keys []string
 	tool string
@@ -37,15 +32,16 @@ var pathRE = regexp.MustCompile(`[\w./-]+\.(?:pdf|png|jpe?g|tiff?|bmp|webp)`)
 type Server struct {
 	Policy  *Policy
 	Consent map[string]map[string][]string
+	Reg     *Registry
 	Cache   *Cache
 	Audit   string
 
 	mu    sync.Mutex
-	usage map[string]map[string]int // userID → {"requests": n, "tokens": n}
+	usage map[string]map[string]int // userID → {"requests", "tokens"}
 }
 
-func NewServer(p *Policy, consent map[string]map[string][]string, auditPath string) *Server {
-	return &Server{Policy: p, Consent: consent, Cache: NewCache(), Audit: auditPath,
+func NewServer(p *Policy, consent map[string]map[string][]string, reg *Registry, auditPath string) *Server {
+	return &Server{Policy: p, Consent: consent, Reg: reg, Cache: NewCache(), Audit: auditPath,
 		usage: map[string]map[string]int{}}
 }
 
@@ -101,9 +97,16 @@ func pickTool(text string) (string, map[string]any, bool) {
 	return "", nil, false
 }
 
-func scopeFor(pal Principal, tool string) string {
+func (s *Server) ttl(tool string) time.Duration {
+	if m, ok := s.Reg.Meta[tool]; ok {
+		return time.Duration(m.TTL) * time.Second
+	}
+	return 0
+}
+
+func scopeFor(pal Principal, tool string, meta map[string]ToolMeta) string {
 	personal := pal.PersonalOK
-	if spec, ok := Tools[tool]; ok && spec.Personal {
+	if m, ok := meta[tool]; ok && m.Personal {
 		personal = true
 	}
 	if personal {
@@ -112,7 +115,7 @@ func scopeFor(pal Principal, tool string) string {
 	return "workspace:default"
 }
 
-// Handle is the whole decision path: identity → quota → tools → cache → tool → delivery.
+// Handle is the whole decision path: identity → quota → which tools exist → cache → tool → delivery.
 func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	pal, err := s.Policy.Resolve(req.PlatformUserID, req.ChatType)
 	if err != nil {
@@ -127,25 +130,18 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 			"reason": "daily quota reached"}}
 	}
 
-	visible := []string{}
-	for _, t := range s.Policy.VisibleTools(pal) {
-		if ConsentAllows(pal, t, s.Consent) {
-			visible = append(visible, t)
-		}
-	}
-	routable := []string{}
-	for _, t := range s.Policy.RoutableTools(pal) {
-		if ConsentAllows(pal, t, s.Consent) {
-			routable = append(routable, t)
-		}
-	}
+	visible := s.Policy.VisibleTools(pal, s.Reg.Meta, s.Reg, s.Consent)
+	routable := s.Policy.RoutableTools(pal, s.Reg.Meta, s.Reg, s.Consent)
 
 	tool, args, matched := pickTool(req.Text)
 	ttl := time.Duration(0)
 	if matched {
-		ttl = TTL[tool]
+		ttl = s.ttl(tool)
 	}
-	scope := scopeFor(pal, tool)
+	scope := scopeFor(pal, tool, s.Reg.Meta)
+	if matched && !contains(routable, tool) {
+		matched = false
+	}
 	key := ExactKey(req.Text, visible, PolicyVersion, pal.ChatType, scope)
 	if ttl > 0 {
 		if hit, ok := s.Cache.GetExact(key); ok {
@@ -167,13 +163,15 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		}
 	}
 
-	// If a provider is configured, the model picks the tool — from the visible list only.
-	if ModelEnabled() {
+	// With a model service attached, the model picks the tool — from the visible list only.
+	if s.Reg.Model != nil {
 		schemas := []map[string]any{}
 		for _, t := range visible {
-			schemas = append(schemas, Schema(t))
+			if sch := s.Reg.Schema(t); sch != nil {
+				schemas = append(schemas, sch)
+			}
 		}
-		turn, err := CompleteWithTools(systemPrompt, req.Text, schemas)
+		turn, err := s.Reg.Complete(systemPrompt, req.Text, schemas)
 		if err == nil {
 			s.charge(pal.UserID, turn.PromptTokens+turn.CompletionTokens)
 			if len(turn.ToolCalls) > 0 {
@@ -202,7 +200,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		}
 	}
 
-	if !matched || !contains(routable, tool) {
+	if !matched {
 		s.charge(pal.UserID, 0)
 		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "no_tool", "tools_visible": visible})
@@ -211,7 +209,8 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 			"tools_visible": visible}
 	}
 
-	mode, err := s.Policy.Decide(pal, tool)
+	meta, known := s.Reg.Meta[tool]
+	mode, err := s.Policy.Decide(pal, tool, meta, known)
 	if err != nil {
 		d := err.(Denied)
 		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
@@ -219,10 +218,11 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		return 403, map[string]any{"denied": map[string]any{"code": d.Code, "reason": d.Message}}
 	}
 
-	result, callErr := CallTool(tool, args, pal)
+	// The gateway executes nothing itself: one MCP call, same shape for every capability.
+	result, callErr := s.Reg.CallTool(tool, args, pal.UserID)
 	answer := render(tool, result, callErr)
 	s.charge(pal.UserID, 0)
-	if ttl > 0 {
+	if ttl > 0 && callErr == nil {
 		s.Cache.PutExact(key, CacheEntry{Answer: answer, TTL: ttl})
 		s.Cache.PutSemantic(req.Text, answer, 0, ttl, scope)
 	}
@@ -243,7 +243,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 
 func render(tool string, result map[string]any, callErr error) string {
 	if callErr != nil {
-		return "Công cụ trả lỗi: " + callErr.Error()
+		return "Dịch vụ trả lỗi: " + callErr.Error()
 	}
 	switch tool {
 	case "salary_self":
@@ -251,21 +251,21 @@ func render(tool string, result map[string]any, callErr error) string {
 		if !found {
 			return "Không tìm thấy bản ghi lương của bạn."
 		}
-		amount, _ := result["amount"].(int)
-		cur, _ := result["currency"].(string)
-		return fmt.Sprintf("Lương tháng này của bạn là %s %s.", thousand(amount), cur)
+		return fmt.Sprintf("Lương tháng này của bạn là %s %s.",
+			thousand(asInt(result["amount"])), asString(result["currency"]))
 	case "docs_search":
-		hits, _ := result["hits"].([]map[string]any)
+		hits, _ := result["hits"].([]any)
 		if len(hits) == 0 {
 			return "Không tìm thấy tài liệu phù hợp."
 		}
-		if id, ok := hits[0]["id"].(string); ok && id != "" {
-			_ = id
-		}
-		return "Tài liệu liên quan: " + fmt.Sprint(hits[0]["id"])
+		first, _ := hits[0].(map[string]any)
+		return "Tài liệu liên quan: " + asString(first["id"])
 	case "status":
 		return fmt.Sprintf("Trạng thái: game=%v, db=%v, redis=%v",
 			result["game"], result["db"], result["redis"])
+	}
+	if text, ok := result["text"].(string); ok {
+		return text
 	}
 	return fmt.Sprint(result)
 }
@@ -292,7 +292,15 @@ func (s *Server) Routes() http.Handler {
 	})
 	mux.HandleFunc("/stats/cache", func(w http.ResponseWriter, r *http.Request) {
 		stats := s.Cache.Stats()
-		stats["l3_prefix"] = PrefixFingerprint(sortedKeys(Tools), PolicyVersion)
+		names := []string{}
+		for name := range s.Reg.Meta {
+			if s.Reg.Advertises(name) {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		stats["l3_prefix"] = PrefixFingerprint(names, PolicyVersion)
+		stats["tools_advertised"] = names
 		writeJSON(w, 200, stats)
 	})
 	mux.HandleFunc("/v1/respond", func(w http.ResponseWriter, r *http.Request) {
@@ -316,19 +324,4 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	w.Write(raw)
-}
-
-func sortedKeys(m map[string]ToolSpec) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	for i := range out {
-		for j := i + 1; j < len(out); j++ {
-			if out[j] < out[i] {
-				out[i], out[j] = out[j], out[i]
-			}
-		}
-	}
-	return out
 }

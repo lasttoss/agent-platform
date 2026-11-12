@@ -1,0 +1,20 @@
+{
+  "servers": [
+    {
+      "name": "demo-tools",
+      "url": "http://127.0.0.1:8091/mcp",
+      "tools": ["salary_self", "docs_search", "status"]
+    },
+    {
+      "name": "ocr",
+      "url": "http://127.0.0.1:8099/mcp",
+      "token_env": "",
+      "tools": ["ocr_extract"]
+    },
+    {
+      "name": "model",
+      "url": "http://127.0.0.1:8097/mcp",
+      "role": "model"
+    }
+  ]
+}

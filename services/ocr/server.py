@@ -15,6 +15,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import mcp
 from engines import engine_report, extract_image, extract_pdf
 from jobs import JobStore
 
@@ -132,6 +133,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": str(exc)})
             job = JOBS.submit(str(payload["path"]), str(payload.get("lang", "eng"))[:12])
             return self._json(202 if job["status"] == "queued" else 503, job)
+        if path == "/mcp":
+            payload = self._payload()
+            if payload is None:
+                return
+            return self._json(200, mcp.handle(payload, run))
         if path != "/v1/ocr":
             return self._json(404, {"error": "not_found"})
         payload = self._payload()

@@ -34,6 +34,13 @@ type rpcRequest struct {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// /health is the probe the gateway uses before it re-reads a tool list. It answers one
+	// question — is this process serving — and says nothing about whether the tools work.
+	if r.Method == http.MethodGet && r.URL.Path == "/health" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "service": h.Name})
+		return
+	}
 	if r.Method != http.MethodPost {
 		write(w, map[string]any{"jsonrpc": "2.0", "id": nil,
 			"error": map[string]any{"code": -32000, "message": "POST only"}})

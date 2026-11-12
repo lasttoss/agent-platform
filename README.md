@@ -23,7 +23,8 @@ amount lives outside git, in `config/local.json`.
 services/gateway-go/  THE GATEWAY AND PROXY — policy, roles, consent, quota, cache, audit, MCP client
   rbac.go             one reason code per hidden tool; backs GET /v1/whoami
   cmd/mcp-demo/       demo tool service: salary, documents, status   (MCP)
-services/ocr/         tool service: PDF text + image OCR             (MCP, no policy, no identity)
+services/ocr/         tool service: PDF text + image OCR, submit + read (MCP, no policy, no identity)
+services/userdir/     who exists, and whether they may act             (MCP, Postgres or SQLite)
 services/model-mcp/   the model as a service: "which tool fits this sentence" (MCP, no tool access)
 services/mcp-ts-example/  a tool service in TypeScript: the boundary is the protocol (MCP)
 services/gateway/     Python REFERENCE gateway + Telegram adapter (parity oracle, not the deployment)
@@ -258,7 +259,7 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 112 tests: 41 gateway-go, 45 Python reference gateway, 21 ocr, 5 model service
+make test     # 129 tests: 52 gateway-go, 45 Python reference gateway, 21 ocr, 6 userdir, 5 model service
 make parity   # starts both gateways + the MCP services, diffs the decisions (10 + 60 generated)
 PARITY_FUZZ=300 python3 scripts/parity.py   # same, 300 generated cases
 ```
@@ -399,6 +400,85 @@ and it is a query instead of a code read.
 At two or more replicas the roles table moves to Postgres (read-mostly, cached in memory by
 policy version) — the same rule as the rest of the shared state above.
 
+## Reachability is re-checked, not assumed
+
+Discovery used to be a boot-time snapshot, which made deploy order a thing a human had to
+remember: start the gateway first and a service that came up a minute later stayed invisible
+until a restart. Every 30 seconds (`-refresh`) the gateway now probes each service and re-reads
+its tool list, in that order:
+
+| What the probe says | What the gateway does | Why |
+|---|---|---|
+| `/health` 200 | re-read `tools/list` | new tools appear, removed tools disappear |
+| `/health` 503/timeout | drop that service's tools immediately | offering a dead tool turns a fast 503 into a slow timeout |
+| `/health` 404 | treat as "no health endpoint", keep going | a plain MCP server is not an outage |
+| `tools/list` fails, health was 200 | keep the previous list | one bad read must not empty the catalogue |
+
+The refresh reports only changes (`+[docs_search] -[status]`), because a log line per tick that
+says "nothing happened" is how real changes stop being noticed.
+
+## Extraction is a queue, not a chat turn
+
+`ocr_extract` submits and returns a job id; `ocr_result` reads it. The gateway remembers that id
+per `(user, chat)`, so the follow-up question is just "result" — an opaque id is the gateway's
+state, not something a person or a model should have to carry:
+
+```
+you:   read samples/text.pdf
+bot:   Extraction queued as 8f2c1a9b3d4e. Ask "result" when you want it.
+you:   result
+bot:   Extraction finished: 420 characters over 2 page(s).
+```
+
+Three details that make this honest rather than decorative:
+
+- a job id is never cached (`ttl = 0`): caching it would serve a stale id tomorrow;
+- one person's pending job is not another person's — the map is keyed by `(user, chat)`;
+- the blocking path still exists (`wait_seconds`), because a caller that genuinely wants to wait
+  should be able to say so.
+
+## Who exists is a Postgres question
+
+`services/userdir` answers one question that no other service is allowed to answer: **is this
+person still allowed to act?** The gateway asks it on the same 30-second timer and refuses a
+disabled account before policy, before the model, before the cache:
+
+```
+{"denied":{"code":"user_disabled","reason":"this account is disabled in the user directory"}}
+```
+
+```
+{"denied":{"code":"user_not_in_directory","reason":"the user directory does not know this caller"}}
+```
+
+The two codes are different on purpose. `user_disabled` means somebody switched this person off.
+`user_not_in_directory` means the two systems disagree about whether the person exists — usually
+a forgotten offboarding on one side, occasionally a typo on the other.
+
+`make check-users` prints that disagreement and exits non-zero:
+
+```
+{"checked":3,"missing_in_directory":["3003"],"unknown_in_caller":["2002"],
+ "inactive":["2002"],"match":false}
+```
+
+The comparison is symmetrical, because both directions are broken: a person policy.json
+provisions and the directory does not know, and a directory row nobody removed.
+
+Three rules keep the directory from becoming a silent widening:
+
+1. **the store is reported, never inferred** — every answer carries `store: postgres` or
+   `store: sqlite`, so a deployment cannot mistake the test store for the real one;
+2. **no silent fallback** — `USERDIR_DSN` set but `psycopg` missing stops the service instead of
+   quietly serving a local file, because that would mean "disabled in Postgres" had no effect;
+3. **a stale copy still refuses** — if the directory stops answering, the last copy stays in
+   force and `/v1/whoami` says `stale: true`. Reverting to policy.json would re-enable everyone
+   somebody disabled on purpose.
+
+What this does not prove: the Postgres path is exercised in this repo through `psql` (schema,
+upsert, disable), not through the Python driver, which is not installed on the machine this was
+built on. The SQL is verified; the binding is not.
+
 ## The gateway is a proxy; the services choose their own language
 
 `services/gateway-go` is the only component that terminates a client request, and it owns no
@@ -411,6 +491,7 @@ server advertises the tool. Everything else is a service that could have been wr
 | `services/gateway-go` | Go, stdlib only | a proxy is I/O and policy; 8.7 MB binary, no runtime, a semaphore instead of a queue | parse a PDF, call a model, know what a salary is |
 | `services/ocr` | Python | one example of an MCP *service*: the PDF text layer and OCR engines are better in Python | decide who may call it, or see an identity |
 | `services/model-mcp` | Python | the model is a service too, reachable only as an MCP tool | touch another tool, or hold a key the gateway needs |
+| `services/userdir` | Python (SQLite, Postgres via `USERDIR_DSN`) | the authority on *who exists*; a directory is a database question, not a code question | decide what a person may do — that is the gateway's job |
 | `services/mcp-ts-example` | TypeScript, zero dependencies | proof that a new capability costs 2 config lines and 0 gateway lines | anything the other services do not do |
 
 Adding a capability in a language that does not exist in this repo yet is a row in

@@ -26,6 +26,8 @@ var intents = []intent{
 	{[]string{"luong", "salary", "payroll"}, "salary_self"},
 	{[]string{"tai lieu", "docs", "runbook", "search"}, "docs_search"},
 	{[]string{"trang thai", "status", "health"}, "status"},
+	// Reading a job back is a second turn by design: extraction is slow, a chat reply is not.
+	{[]string{"ket qua", "result", "xong chua", "job"}, "ocr_result"},
 }
 
 var pathRE = regexp.MustCompile(`[\w./-]+\.(?:pdf|png|jpe?g|tiff?|bmp|webp)`)
@@ -46,11 +48,24 @@ type Server struct {
 	mu    sync.Mutex
 	usage map[string]map[string]int // userID → {"requests", "tokens"}
 	sems  map[string]chan struct{}  // tool → in-flight slots (see acquire)
+	// jobs remembers the last extraction job per (user, chat), so the follow-up question
+	// "result?" does not require the caller to copy an opaque id out of a message.
+	jobs map[string]string
+
+	// The user directory is the authority on *who exists*, and it is refreshed on the same
+	// timer as service discovery. `dirSource` says where the current answer came from, because
+	// "the directory is unreachable, so policy.json decides" must be a visible state, not a
+	// quiet widening of access.
+	dir       map[string]bool
+	dirLoaded bool
+	dirSource string
+	dirStale  bool
 }
 
 func NewServer(p *Policy, consent map[string]map[string][]string, reg *Registry, auditPath string) *Server {
 	return &Server{Policy: p, Consent: consent, Reg: reg, Cache: NewCache(), Audit: auditPath,
-		usage: map[string]map[string]int{}, sems: map[string]chan struct{}{}}
+		usage: map[string]map[string]int{}, sems: map[string]chan struct{}{},
+		jobs: map[string]string{}, dir: map[string]bool{}, dirSource: "policy"}
 }
 
 type respondRequest struct {
@@ -122,6 +137,92 @@ func (s *Server) acquire(tool string, limit int) (func(), bool) {
 	}
 }
 
+// LoadDirectory replaces the in-memory copy from the userdir service. Called at boot and by the
+// refresh loop. A failure keeps the previous copy: an unreachable directory must not silently
+// re-enable everybody.
+func (s *Server) LoadDirectory(users map[string]bool) {
+	s.mu.Lock()
+	s.dir = users
+	s.dirLoaded = true
+	s.dirSource = "userdir"
+	s.dirStale = false
+	s.mu.Unlock()
+}
+
+// RefreshDirectory reads the directory over MCP. A failure keeps the last copy and marks it
+// stale rather than reverting to policy: an unreachable Postgres must not re-enable a person
+// somebody disabled on purpose.
+func (s *Server) RefreshDirectory(reg *Registry) error {
+	out, err := reg.CallTool("user_list", map[string]any{}, "gateway")
+	if err != nil {
+		s.mu.Lock()
+		if s.dirLoaded {
+			s.dirStale = true
+		}
+		s.mu.Unlock()
+		return err
+	}
+	users := map[string]bool{}
+	if list, ok := out["users"].([]any); ok {
+		for _, item := range list {
+			row, _ := item.(map[string]any)
+			active, _ := row["active"].(bool)
+			users[asString(row["id"])] = active
+		}
+	}
+	s.LoadDirectory(users)
+	return nil
+}
+
+// CheckUsers compares the directory against the users this gateway's policy provisions. It is
+// the command a deployment runs after onboarding, and the one that catches an offboarding that
+// only happened in one of the two systems.
+func (s *Server) CheckUsers(reg *Registry) (map[string]any, error) {
+	ids := make([]any, 0, len(s.Policy.Users))
+	for id := range s.Policy.Users {
+		ids = append(ids, id)
+	}
+	sort.Strings(make([]string, 0)) // keep the import honest; ids are sorted below
+	sort.Slice(ids, func(i, j int) bool { return asString(ids[i]) < asString(ids[j]) })
+	return reg.CallTool("user_consistency", map[string]any{"known_ids": ids}, "gateway")
+}
+
+// directoryVerdict answers "may this person act at all", which is a different question from
+// "which tools may they use". A person disabled in Postgres is refused here, before any tool,
+// any model call and any cache lookup.
+func (s *Server) directoryVerdict(userID string) (allowed bool, code, detail string) {
+	s.mu.Lock()
+	dir, loaded := s.dir, s.dirLoaded
+	s.mu.Unlock()
+	if !loaded {
+		return true, "", ""
+	}
+	active, known := dir[userID]
+	if !known {
+		return false, "user_not_in_directory", "the user directory does not know this caller"
+	}
+	if !active {
+		return false, "user_disabled", "this account is disabled in the user directory"
+	}
+	return true, "", ""
+}
+
+func jobKey(pal Principal) string { return pal.UserID + "|" + pal.ChatType }
+
+// rememberJob stores the id the service handed back. The mapping is per (user, chat): one
+// person's pending extraction is not another person's, and a group is not a DM.
+func (s *Server) rememberJob(pal Principal, id string) {
+	s.mu.Lock()
+	s.jobs[jobKey(pal)] = id
+	s.mu.Unlock()
+}
+
+func (s *Server) pendingJob(pal Principal) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.jobs[jobKey(pal)]
+}
+
 func pickTool(text string) (string, map[string]any, bool) {
 	low := Fold(text)
 	if pathRE.MatchString(text) {
@@ -157,6 +258,11 @@ func scopeFor(pal Principal, tool string, meta map[string]ToolMeta) string {
 
 // Handle is the whole decision path: identity → quota → which tools exist → cache → tool → delivery.
 func (s *Server) Handle(req respondRequest) (int, map[string]any) {
+	if allowed, code, detail := s.directoryVerdict(req.PlatformUserID); !allowed {
+		s.audit(map[string]any{"user": req.PlatformUserID, "chat": req.ChatType,
+			"decision": "denied", "code": code})
+		return 403, map[string]any{"denied": map[string]any{"code": code, "reason": detail}}
+	}
 	pal, err := s.Policy.Resolve(req.PlatformUserID, req.ChatType)
 	if err != nil {
 		d := err.(Denied)
@@ -255,6 +361,20 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 			"tools_visible": visible}
 	}
 
+	// A tool whose argument is not something a person should have to type: the gateway owns the
+	// state, so it fills the argument. The model never chooses a job id, same rule as identity.
+	if tool == "ocr_result" {
+		id := s.pendingJob(pal)
+		if id == "" {
+			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+				"decision": "no_tool", "tool": tool, "reason": "no_pending_job"})
+			return 200, map[string]any{"delivered": "chat", "dm": nil,
+				"chat_reply":    "No extraction job is pending. Send me a document first.",
+				"tools_visible": visible}
+		}
+		args = map[string]any{"job_id": id}
+	}
+
 	meta, known := s.Reg.Meta[tool]
 	mode, err := s.Policy.Decide(pal, tool, meta, known)
 	if err != nil {
@@ -275,6 +395,11 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 
 	// The gateway executes nothing itself: one MCP call, same shape for every capability.
 	result, callErr := s.Reg.CallTool(tool, args, pal.UserID)
+	if callErr == nil && tool == "ocr_extract" {
+		if id := asString(result["job_id"]); id != "" {
+			s.rememberJob(pal, id)
+		}
+	}
 	answer := render(tool, result, callErr)
 	if ttl > 0 && callErr == nil {
 		s.Cache.PutExact(key, CacheEntry{Answer: answer, TTL: ttl})
@@ -314,6 +439,30 @@ func render(tool string, result map[string]any, callErr error) string {
 		}
 		first, _ := hits[0].(map[string]any)
 		return "Matching documents: " + asString(first["id"])
+	case "ocr_extract":
+		id := asString(result["job_id"])
+		if id == "" {
+			return "Extraction started."
+		}
+		return fmt.Sprintf("Extraction queued as %s. Ask \"result\" when you want it.", id)
+	case "ocr_result":
+		switch asString(result["status"]) {
+		case "done":
+			r, _ := result["result"].(map[string]any)
+			chars, pages := asInt(r["chars"]), asInt(r["pages"])
+			if chars == 0 {
+				return fmt.Sprintf("Extraction finished: %d page(s), no text layer found.", pages)
+			}
+			return fmt.Sprintf("Extraction finished: %d characters over %d page(s).", chars, pages)
+		case "failed":
+			return "Extraction failed: " + asString(result["error"])
+		case "expired":
+			return "That extraction expired; send the document again."
+		case "rejected":
+			return "The extraction queue is full; try again in a moment."
+		default:
+			return "Extraction is still running. Ask \"result\" again in a moment."
+		}
 	case "status":
 		return fmt.Sprintf("Status: game=%v, db=%v, redis=%v",
 			result["game"], result["db"], result["redis"])
@@ -393,9 +542,18 @@ func (s *Server) Whoami(userID, chatType string) (int, map[string]any) {
 			"requests_used": used["requests"], "requests_per_day": s.Policy.Quota.RequestsPerDay,
 			"tokens_used": used["tokens"], "tokens_per_day": s.Policy.Quota.TokensPerDay,
 		},
-		"tools":  verdicts,
-		"counts": Counts(verdicts),
+		"directory": s.directoryState(pal.UserID),
+		"tools":     verdicts,
+		"counts":    Counts(verdicts),
 	}
+}
+
+func (s *Server) directoryState(userID string) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active, known := s.dir[userID]
+	return map[string]any{"source": s.dirSource, "loaded": s.dirLoaded, "stale": s.dirStale,
+		"known": known, "active": known && active}
 }
 
 func (s *Server) Routes() http.Handler {

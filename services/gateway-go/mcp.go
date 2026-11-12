@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -15,11 +18,12 @@ import (
 // cache and audit; it does not know how to extract a PDF, read mail, or talk to a model.
 // Adding a capability means adding a server — not a new branch in the gateway.
 type ServerConf struct {
-	Name     string   `json:"name"`
-	URL      string   `json:"url"`
-	TokenEnv string   `json:"token_env"`
-	Role     string   `json:"role"` // "" = tool service, "model" = the brain
-	Tools    []string `json:"tools"`
+	Name      string   `json:"name"`
+	URL       string   `json:"url"`
+	HealthURL string   `json:"health_url"` // default: same host as URL, path /health
+	TokenEnv  string   `json:"token_env"`
+	Role      string   `json:"role"` // "" = tool service, "model" = the brain
+	Tools     []string `json:"tools"`
 }
 
 type ToolMeta struct {
@@ -171,13 +175,27 @@ func (c *Client) Call(name string, args map[string]any, caller string) (map[stri
 }
 
 // Registry is the list of services this gateway may talk to, and what each one said it can do.
-// Discovery happens once at boot: a tool that no server advertises does not exist, so it can
-// never be offered to a model or called by a chat.
+// A tool that no reachable server advertises does not exist, so it can never be offered to a
+// model or called by a chat.
+//
+// Reachability is re-checked on a timer (30 s by default): health first, then the MCP tool list.
+// A service that was down at boot and came up afterwards becomes visible without restarting the
+// gateway — the alternative is a deploy order that somebody has to remember.
 type Registry struct {
 	Meta    map[string]ToolMeta
 	Servers []*MCPServer
 	byTool  map[string]*MCPServer
 	Model   *MCPServer
+
+	mu     sync.RWMutex
+	health *http.Client
+}
+
+// RefreshReport says what changed, so the caller can log changes and stay quiet about no-ops.
+type RefreshReport struct {
+	Added   []string
+	Removed []string
+	Errors  []error
 }
 
 type MCPServer struct {
@@ -190,7 +208,8 @@ type MCPServer struct {
 // step whose failures are printed, instead of a constructor that quietly drops a service —
 // silence there would look exactly like "this tool was never configured".
 func NewRegistry(meta map[string]ToolMeta, confs []ServerConf) *Registry {
-	r := &Registry{Meta: meta, byTool: map[string]*MCPServer{}}
+	r := &Registry{Meta: meta, byTool: map[string]*MCPServer{},
+		health: &http.Client{Timeout: 2 * time.Second}}
 	for _, conf := range confs {
 		token := ""
 		if conf.TokenEnv != "" {
@@ -206,48 +225,143 @@ func NewRegistry(meta map[string]ToolMeta, confs []ServerConf) *Registry {
 	return r
 }
 
-func (r *Registry) add(srv *MCPServer) error {
+// listTools reads a server's allowlisted tool list. The config is the allowlist: a tool a
+// running service advertises but the gateway's config does not name is not a capability.
+func (r *Registry) listTools(srv *MCPServer) (map[string]MCPTool, error) {
 	tools, err := srv.Client.ListTools()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	out := map[string]MCPTool{}
 	for _, t := range tools {
-		// A server may advertise more than the gateway's config allows: the config is the
-		// allowlist, an unreviewed tool on a running service is not a capability.
 		if len(srv.Conf.Tools) > 0 && !contains(srv.Conf.Tools, t.Name) {
 			continue
 		}
-		srv.Tools[t.Name] = t
-		r.byTool[t.Name] = srv
+		out[t.Name] = t
 	}
-	return nil
+	return out, nil
 }
 
-// Discover re-reads the tool lists. Called at boot and by tests.
-func (r *Registry) Discover() []error {
-	var errs []error
-	for _, srv := range r.Servers {
-		if srv.Conf.Role == "model" {
+// healthURL is the probe address: explicit when configured, otherwise the same host as the MCP
+// endpoint with the path replaced, which is what every service in this repo serves.
+func healthURL(conf ServerConf) string {
+	if conf.HealthURL != "" {
+		return conf.HealthURL
+	}
+	u, err := url.Parse(conf.URL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.Path, u.RawQuery, u.Fragment = "/health", "", ""
+	return u.String()
+}
+
+// probe answers three things: is it up, does it even have a health endpoint, and why.
+// A 404 means "no health endpoint", not "broken": treating the absence of an optional endpoint
+// as an outage would delete a working service's tools on every tick.
+func (r *Registry) probe(conf ServerConf) (healthy bool, known bool, detail string) {
+	target := healthURL(conf)
+	if target == "" {
+		return true, false, "no health url"
+	}
+	resp, err := r.health.Get(target)
+	if err != nil {
+		return false, true, err.Error()
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, true, "200"
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return true, false, "no health endpoint"
+	}
+	return false, true, resp.Status
+}
+
+// Refresh probes every service, then re-reads the tool lists of the ones that answer. A failing
+// probe removes that service's tools immediately: offering a tool whose service is down turns a
+// fast 503 into a slow timeout. A failing tool list keeps the previous list, because a single
+// bad read should not empty the catalogue.
+func (r *Registry) Refresh() RefreshReport {
+	var rep RefreshReport
+	servers := append([]*MCPServer{}, r.Servers...)
+	for _, srv := range servers {
+		healthy, _, detail := r.probe(srv.Conf)
+		if !healthy {
+			r.mu.Lock()
+			if srv.Conf.Role == "model" {
+				if r.Model != nil {
+					rep.Removed = append(rep.Removed, "model")
+					r.Model = nil
+				}
+			} else {
+				for name := range srv.Tools {
+					delete(r.byTool, name)
+					rep.Removed = append(rep.Removed, name)
+				}
+				srv.Tools = map[string]MCPTool{}
+			}
+			r.mu.Unlock()
+			rep.Errors = append(rep.Errors, fmt.Errorf("%s: health %s", srv.Conf.Name, detail))
 			continue
 		}
-		if err := r.add(srv); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", srv.Conf.Name, err))
+
+		if srv.Conf.Role == "model" {
+			if r.Model == nil {
+				r.mu.Lock()
+				r.Model = srv
+				r.mu.Unlock()
+				rep.Added = append(rep.Added, "model")
+			}
+			continue
 		}
+
+		tools, err := r.listTools(srv)
+		if err != nil {
+			rep.Errors = append(rep.Errors, fmt.Errorf("%s: tools/list: %w", srv.Conf.Name, err))
+			continue
+		}
+		r.mu.Lock()
+		for name := range srv.Tools {
+			if _, still := tools[name]; !still {
+				delete(r.byTool, name)
+				rep.Removed = append(rep.Removed, name)
+			}
+		}
+		for name, t := range tools {
+			if _, had := srv.Tools[name]; !had {
+				rep.Added = append(rep.Added, name)
+			}
+			srv.Tools[name] = t
+			r.byTool[name] = srv
+		}
+		r.mu.Unlock()
 	}
-	return errs
+	sort.Strings(rep.Added)
+	sort.Strings(rep.Removed)
+	return rep
 }
 
+// Discover is Refresh: one code path, so the boot state and the 30-second state cannot drift.
+func (r *Registry) Discover() []error { return r.Refresh().Errors }
+
 func (r *Registry) Advertises(tool string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	_, ok := r.byTool[tool]
 	return ok
 }
 
 func (r *Registry) Schema(tool string) map[string]any {
+	r.mu.RLock()
 	srv, ok := r.byTool[tool]
 	if !ok {
+		r.mu.RUnlock()
 		return nil
 	}
 	t := srv.Tools[tool]
+	r.mu.RUnlock()
 	desc := t.Description
 	if m, ok := r.Meta[tool]; ok && m.Description != "" {
 		desc = m.Description
@@ -257,7 +371,9 @@ func (r *Registry) Schema(tool string) map[string]any {
 }
 
 func (r *Registry) CallTool(tool string, args map[string]any, caller string) (map[string]any, error) {
+	r.mu.RLock()
 	srv, ok := r.byTool[tool]
+	r.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("no server advertises " + tool)
 	}
@@ -268,10 +384,13 @@ func (r *Registry) CallTool(tool string, args map[string]any, caller string) (ma
 // The gateway sends only the schemas it has already filtered, so an unoffered tool is not a
 // request the model can make.
 func (r *Registry) Complete(system, user string, tools []map[string]any) (ModelTurn, error) {
-	if r.Model == nil {
+	r.mu.RLock()
+	model := r.Model
+	r.mu.RUnlock()
+	if model == nil {
 		return ModelTurn{}, errors.New("no model service configured")
 	}
-	out, err := r.Model.Client.Call("chat_complete", map[string]any{
+	out, err := model.Client.Call("chat_complete", map[string]any{
 		"system": system, "user": user, "tools": tools}, "")
 	if err != nil {
 		return ModelTurn{}, err

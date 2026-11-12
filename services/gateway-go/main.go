@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // The gateway keeps three things: who may call, what has been called, and what answer can be
@@ -28,6 +30,10 @@ func main() {
 	mcpPath := flag.String("mcp", "../../config/mcp.json", "MCP services")
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	audit := flag.String("audit", "state/audit.log", "audit log path")
+	refresh := flag.Duration("refresh", 30*time.Second,
+		"how often to re-probe services (health, then tools/list) and reload the user directory; 0 disables")
+	checkUsers := flag.Bool("check-users", false,
+		"compare the user directory with policy.json, print the diff, exit 1 on mismatch")
 	flag.Parse()
 
 	// Defaults work from the service directory and from the repo root: guessing wrong about
@@ -78,6 +84,41 @@ func main() {
 		os.MkdirAll(dir, 0o755)
 	}
 	srv := NewServer(pol, consent, reg, *audit)
+	if err := srv.RefreshDirectory(reg); err != nil {
+		log.Printf("user directory unavailable (%v) — policy.json decides who may act", err)
+	} else {
+		fmt.Printf("user directory loaded (%d users)\n", len(srv.dir))
+	}
+	if *checkUsers {
+		report, err := srv.CheckUsers(reg)
+		if err != nil {
+			log.Fatalf("check-users: %v", err)
+		}
+		raw, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(raw))
+		if match, _ := report["match"].(bool); !match {
+			os.Exit(1)
+		}
+		return
+	}
+	if *refresh > 0 {
+		// Health first, then the MCP tool list: a service that comes up after the gateway
+		// becomes usable without a restart, and one that dies stops being offered.
+		go func() {
+			for range time.Tick(*refresh) {
+				rep := reg.Refresh()
+				if err := srv.RefreshDirectory(reg); err != nil {
+					log.Printf("refresh: user directory: %v", err)
+				}
+				if len(rep.Added) > 0 || len(rep.Removed) > 0 {
+					log.Printf("refresh: +%v -%v", rep.Added, rep.Removed)
+				}
+				for _, err := range rep.Errors {
+					log.Printf("refresh: %v", err)
+				}
+			}
+		}()
+	}
 	srv.AdapterToken = os.Getenv("ADAPTER_TOKEN")
 	if srv.AdapterToken != "" {
 		fmt.Println("adapter token required on /v1/respond and /v1/whoami")

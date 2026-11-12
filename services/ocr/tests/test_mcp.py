@@ -37,9 +37,11 @@ class McpAdapterTests(unittest.TestCase):
         return mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": name, "arguments": arguments}}, ocr.run)
 
-    def test_it_advertises_exactly_one_tool(self) -> None:
+    def test_it_advertises_the_submit_and_read_pair(self) -> None:
         body = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, ocr.run)
-        self.assertEqual([t["name"] for t in body["result"]["tools"]], ["ocr_extract"])
+        self.assertEqual([t["name"] for t in body["result"]["tools"]],
+                         ["ocr_extract", "ocr_result"],
+                         "extraction is slow: submit and read are two tools, not one blocking call")
         self.assertIn("path", body["result"]["tools"][0]["inputSchema"]["required"])
 
     def test_a_text_pdf_comes_back_as_a_json_document(self) -> None:

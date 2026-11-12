@@ -1,9 +1,10 @@
 PY := python3
 
-.PHONY: test samples test-gateway test-ocr test-model test-go parity \
-	run-gateway run-gateway-go run-ts-example run-mcp-demo run-model run-ocr run-adapter demo-adapter
+.PHONY: test samples test-gateway test-ocr test-model test-userdir test-go parity \
+	run-gateway run-gateway-go run-ts-example run-mcp-demo run-model run-ocr run-userdir \
+	run-adapter demo-adapter check-users
 
-test: samples test-gateway test-ocr test-model test-go
+test: samples test-gateway test-ocr test-model test-userdir test-go
 
 samples:
 	@python3 services/ocr/samples/make_samples.py >/dev/null && echo "== samples =="
@@ -11,6 +12,10 @@ samples:
 test-gateway:
 	@echo "== gateway =="
 	@cd services/gateway && $(PY) -m unittest discover -s tests
+
+test-userdir:
+	@echo "== userdir =="
+	@cd services/userdir && $(PY) -m unittest discover -s tests
 
 test-ocr:
 	@echo "== ocr =="
@@ -54,3 +59,10 @@ demo-adapter:
 
 run-ocr:
 	cd services/ocr && PORT=8099 $(PY) server.py
+
+run-userdir:
+	cd services/userdir && PORT=8093 $(PY) server.py
+
+# Compares the user directory with policy.json and exits non-zero on a mismatch.
+check-users:
+	cd services/gateway-go && go run . -check-users -refresh 0

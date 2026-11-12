@@ -28,7 +28,8 @@
         "salary_self",
         "docs_search",
         "status",
-        "ocr_extract"
+        "ocr_extract",
+        "ocr_result"
       ]
     },
     "guest": {
@@ -45,6 +46,7 @@
         "docs_search",
         "status",
         "ocr_extract",
+        "ocr_result",
         "drive_search",
         "jira_search",
         "mail_list"

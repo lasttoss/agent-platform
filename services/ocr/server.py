@@ -59,6 +59,11 @@ def extract_for_job(raw_path: str, lang: str) -> dict:
     return result
 
 
+def _sync_extract(payload: dict) -> tuple[int, dict]:
+    """The blocking path, kept for callers that ask for it explicitly (wait_seconds > 0)."""
+    return run(payload)
+
+
 def run(payload: dict) -> tuple[int, dict]:
     started = time.monotonic()
     try:
@@ -137,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._payload()
             if payload is None:
                 return
-            return self._json(200, mcp.handle(payload, run))
+            return self._json(200, mcp.handle(payload, run, JOBS, sync_extract=_sync_extract))
         if path != "/v1/ocr":
             return self._json(404, {"error": "not_found"})
         payload = self._payload()

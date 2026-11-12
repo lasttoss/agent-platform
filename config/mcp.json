@@ -3,13 +3,30 @@
     {
       "name": "demo-tools",
       "url": "http://127.0.0.1:8091/mcp",
-      "tools": ["salary_self", "docs_search", "status"]
+      "tools": [
+        "salary_self",
+        "docs_search",
+        "status"
+      ]
+    },
+    {
+      "name": "userdir",
+      "url": "http://127.0.0.1:8093/mcp",
+      "health_url": "http://127.0.0.1:8093/health",
+      "tools": [
+        "user_list",
+        "user_consistency",
+        "user_set_active"
+      ]
     },
     {
       "name": "ocr",
       "url": "http://127.0.0.1:8099/mcp",
       "token_env": "",
-      "tools": ["ocr_extract"]
+      "tools": [
+        "ocr_extract",
+        "ocr_result"
+      ]
     },
     {
       "name": "model",

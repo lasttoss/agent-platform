@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,10 @@ func main() {
 	audit := flag.String("audit", "state/audit.log", "audit log path")
 	refresh := flag.Duration("refresh", 30*time.Second,
 		"how often to re-probe services (health, then tools/list) and reload the user directory; 0 disables")
+	auditHTTP := flag.String("audit-http", os.Getenv("AUDIT_SINK_URL"),
+		"optional collector URL: each audit line is also shipped there (best effort)")
+	setActive := flag.String("set-active", "",
+		"enable or disable a user in the directory, id:true|false, then exit")
 	checkUsers := flag.Bool("check-users", false,
 		"compare the user directory with policy.json, print the diff, exit 1 on mismatch")
 	flag.Parse()
@@ -101,6 +106,19 @@ func main() {
 		}
 		return
 	}
+	if *setActive != "" {
+		parts := strings.SplitN(*setActive, ":", 2)
+		if len(parts) != 2 || (parts[1] != "true" && parts[1] != "false") {
+			log.Fatalf("set-active wants id:true or id:false, got %q", *setActive)
+		}
+		out, err := srv.SetUserActive(reg, parts[0], parts[1] == "true")
+		if err != nil {
+			log.Fatalf("set-active: %v", err)
+		}
+		raw, _ := json.Marshal(out)
+		fmt.Println(string(raw))
+		return
+	}
 	if *refresh > 0 {
 		// Health first, then the MCP tool list: a service that comes up after the gateway
 		// becomes usable without a restart, and one that dies stops being offered.
@@ -118,6 +136,10 @@ func main() {
 				}
 			}
 		}()
+	}
+	srv.StartAuditSink(*auditHTTP)
+	if *auditHTTP != "" {
+		fmt.Println("audit sink:", *auditHTTP)
 	}
 	srv.AdapterToken = os.Getenv("ADAPTER_TOKEN")
 	if srv.AdapterToken != "" {

@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,6 +66,11 @@ type Server struct {
 	dirLoaded bool
 	dirSource string
 	dirStale  bool
+
+	// The local JSONL file is the durable audit record. The sink is the aggregate view: best
+	// effort, never blocking a request, and losing a delivery must not lose the line.
+	auditQ       chan []byte
+	auditDropped atomic.Int64
 }
 
 func NewServer(p *Policy, consent map[string]map[string][]string, reg *Registry, auditPath string) *Server {
@@ -74,18 +85,78 @@ type respondRequest struct {
 	Text           string `json:"text"`
 }
 
-func (s *Server) audit(rec map[string]any) {
-	if s.Audit == "" {
+// StartAuditSink ships each audit line to a collector, asynchronously. A full buffer drops the
+// delivery and counts it: the file still has the line, and a request must never wait on logging.
+func newEventID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func (s *Server) StartAuditSink(url string) {
+	if url == "" {
 		return
 	}
-	rec["ts"] = time.Now().Format(time.RFC3339)
-	raw, _ := json.Marshal(rec)
-	f, err := os.OpenFile(s.Audit, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	s.auditQ = make(chan []byte, 1024)
+	go func() {
+		client := &http.Client{Timeout: 3 * time.Second}
+		for line := range s.auditQ {
+			resp, err := client.Post(url, "application/json", bytes.NewReader(line))
+			if err != nil {
+				s.auditDropped.Add(1)
+				continue
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				s.auditDropped.Add(1)
+			}
+		}
+	}()
+}
+
+// AuditDropped is the number of sink deliveries that failed or were shed. Exposed so a deployment
+// can alert on it instead of assuming every line arrived.
+func (s *Server) AuditDropped() int64 { return s.auditDropped.Load() }
+
+// SetUserActive writes to the directory through the same MCP tool an operator would call. This is
+// deliberately not reachable from a chat: `user_set_active` is marked destructive in tools.json,
+// and the gateway calls it here on behalf of a flag, with an audit line that says who did it.
+func (s *Server) SetUserActive(reg *Registry, userID string, active bool) (map[string]any, error) {
+	out, err := reg.CallTool("user_set_active",
+		map[string]any{"user_id": userID, "active": active}, "gateway")
 	if err != nil {
+		return nil, err
+	}
+	s.audit(map[string]any{"user": userID, "decision": "directory_write",
+		"active": active, "by": "operator"})
+	return out, nil
+}
+
+func (s *Server) audit(rec map[string]any) {
+	rec["ts"] = time.Now().Format(time.RFC3339)
+	// An event id, not a content hash: two requests in the same second can look identical, and a
+	// collector that dedupes on content would silently undercount them. A retried delivery keeps
+	// the id, which is exactly what makes it a retry.
+	rec["event_id"] = newEventID()
+	raw, _ := json.Marshal(rec)
+	if s.Audit != "" {
+		if f, err := os.OpenFile(s.Audit, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			f.Write(append(raw, '\n'))
+			f.Close()
+		}
+	}
+	if s.auditQ == nil {
 		return
 	}
-	defer f.Close()
-	f.Write(append(raw, '\n'))
+	// Never block a request on logging: shed the delivery, keep the line, count the loss.
+	select {
+	case s.auditQ <- raw:
+	default:
+		s.auditDropped.Add(1)
+	}
 }
 
 // One request slot per caller turn, tokens as they are actually spent. The two are counted

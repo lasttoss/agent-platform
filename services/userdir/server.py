@@ -34,15 +34,33 @@ ROOT = Path(__file__).resolve().parent
 DSN = os.environ.get("USERDIR_DSN", "").strip()
 DB_PATH = Path(os.environ.get("USERDIR_DB", ROOT / "state" / "users.db"))
 PORT = int(os.environ.get("PORT", "8093"))
+# Loopback by default: a directory that lists who exists should not be reachable from the
+# network because somebody forgot a flag. Containers and other hosts must say so explicitly.
+HOST = os.environ.get("USERDIR_HOST", "127.0.0.1")
 MAX_BYTES = 64 * 1024
 
-SCHEMA = """
+# Two schemas, spelled out, instead of one string with a replace() over it. The first attempt at
+# writing this did `SCHEMA.replace("INTEGER", "BOOLEAN")`, which produced
+# `active BOOLEAN NOT NULL DEFAULT 1` — valid-looking, rejected by Postgres, and invisible to every
+# test that ran on SQLite. Generating DDL by string surgery is how a database port stops being a
+# port.
+SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id          TEXT PRIMARY KEY,
     active      INTEGER NOT NULL DEFAULT 1,
     role        TEXT NOT NULL DEFAULT 'dev',
     workspace   TEXT NOT NULL DEFAULT '',
     updated_at  REAL NOT NULL DEFAULT 0
+)
+"""
+
+POSTGRES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id          TEXT PRIMARY KEY,
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    role        TEXT NOT NULL DEFAULT 'dev',
+    workspace   TEXT NOT NULL DEFAULT '',
+    updated_at  DOUBLE PRECISION NOT NULL DEFAULT 0
 )
 """
 
@@ -55,7 +73,7 @@ class SQLiteStore:
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
-        self.db.execute(SCHEMA)
+        self.db.execute(SQLITE_SCHEMA)
         self.db.commit()
 
     def all_users(self) -> list[dict]:
@@ -88,7 +106,7 @@ class PostgresStore:
         self.psycopg = psycopg
         self.conn = psycopg.connect(dsn, autocommit=True)
         with self.conn.cursor() as cur:
-            cur.execute(SCHEMA.replace("INTEGER", "BOOLEAN").replace("REAL", "DOUBLE PRECISION"))
+            cur.execute(POSTGRES_SCHEMA)
 
     def all_users(self) -> list[dict]:
         with self.conn.cursor() as cur:
@@ -228,5 +246,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"userdir on :{PORT} — store={STORE.kind} users={len(STORE.all_users())}")
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    print(f"userdir on {HOST}:{PORT} — store={STORE.kind} users={len(STORE.all_users())}", flush=True)
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

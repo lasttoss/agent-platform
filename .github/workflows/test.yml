@@ -15,6 +15,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
       - name: Python extras
         run: python3 -m pip install --quiet -r services/ocr/requirements.txt
 
@@ -30,5 +34,8 @@ jobs:
       - name: Generate OCR fixtures (synthetic, never committed)
         run: python3 services/ocr/samples/make_samples.py
 
-      - name: Tests
+      - name: Tests (python + go)
         run: make test
+
+      - name: Parity — the same policy, two implementations
+        run: make parity

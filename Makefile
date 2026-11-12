@@ -1,8 +1,8 @@
 PY := python3
 
-.PHONY: test samples test-gateway test-ocr run-gateway run-ocr run-adapter demo-adapter
+.PHONY: test samples test-gateway test-ocr test-go parity run-gateway run-ocr run-adapter demo-adapter
 
-test: samples test-gateway test-ocr
+test: samples test-gateway test-ocr test-go
 
 samples:
 	@python3 services/ocr/samples/make_samples.py >/dev/null && echo "== samples =="
@@ -14,6 +14,14 @@ test-gateway:
 test-ocr:
 	@echo "== ocr =="
 	@cd services/ocr && $(PY) -m unittest discover -s tests
+
+test-go:
+	@echo "== gateway-go =="
+	@cd services/gateway-go && go test ./...
+
+parity:
+	@echo "== parity: python vs go =="
+	@python3 scripts/parity.py
 
 run-gateway:
 	cd services/gateway && PORT=8088 $(PY) -m gateway.server

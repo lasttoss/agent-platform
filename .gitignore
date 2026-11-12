@@ -1,5 +1,7 @@
 # runtime state: audit trail, usage counters, cache — never in git
 state/
+services/gateway-go/state/
+services/gateway-go/gateway-go
 *.db
 *.log
 *.sqlite3

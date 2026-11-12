@@ -240,7 +240,19 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 57 tests: 42 gateway/cache/adapter, 15 ocr (incl. the job queue), no keys, no network
+make test     # 72 tests: 42 gateway/cache/adapter, 15 ocr (incl. the job queue), 15 gateway-go
+make parity   # starts both gateways, sends the same 10 requests, diffs the decisions: 10/10 equal
 ```
 CI runs the same command on every push (`.github/workflows/test.yml`); the only system dependency
 is poppler for the PDF text layer, and the OCR fixtures are generated, never committed.
+
+## Two implementations, one policy
+
+`services/gateway-go/` is the same gateway in Go. It reads the same `policy.json` and
+`consent.json`, and `scripts/parity.py` starts both servers, sends ten requests and diffs the
+answers — refused, delivered, visible tools, cache layer. Currently **10/10 identical**.
+
+That is the point of keeping the policy in a data file and the decisions in one small module:
+porting the language does not change who may do what. The Go port also carries its own 15 tests,
+and it documents its known gaps (no OCR tool yet, cache not persisted) rather than pretending to
+be the same program.

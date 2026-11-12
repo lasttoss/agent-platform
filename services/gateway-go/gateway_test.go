@@ -514,3 +514,27 @@ func TestSemanticCacheDoesNotCrossTools(t *testing.T) {
 		t.Fatalf("a status answer was reused for a documents question: %v", got)
 	}
 }
+
+// A service in another language, with a tool the gateway's code has never seen: one config
+// entry, one registry entry, and the generic renderer. No gateway logic knows what a wiki is.
+func TestAToolFromAnotherLanguageIsReachableWithoutGatewayCode(t *testing.T) {
+	h := newHarness(t,
+		withExtraServer("wiki-ts", &mcpserver.Handler{
+			Name:  "wiki-ts",
+			Tools: []mcpserver.Tool{{Name: "wiki_search", InputSchema: map[string]any{"type": "object"}}},
+			Call: func(string, map[string]any, *http.Request) (any, error) {
+				return map[string]any{"hits": []any{
+					map[string]any{"id": "adr-cache", "title": "three cache layers"}}}, nil
+			}}),
+		withModel(map[string]any{"tool_calls": []any{map[string]any{
+			"name": "wiki_search", "arguments": map[string]any{"q": "cache"}}}}))
+
+	h.Reg.Meta["wiki_search"] = ToolMeta{TTL: 600, Description: "Search the wiki."}
+	h.Policy.Chats["dm"] = ChatConf{Tools: append(h.Policy.Chats["dm"].Tools, "wiki_search"),
+		PrivateTools: h.Policy.Chats["dm"].PrivateTools, PersonalData: true, FreeChat: true}
+
+	body := h.ok(t, "1001", "dm", "tra giúp tôi cái gì đó")
+	if body["chat_reply"] != "Kết quả: adr-cache" {
+		t.Fatalf("a tool from another service did not answer: %v", body["chat_reply"])
+	}
+}

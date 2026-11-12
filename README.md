@@ -24,6 +24,7 @@ services/gateway-go/  THE GATEWAY — policy, consent, quota, cache, audit, MCP 
   cmd/mcp-demo/       demo tool service: salary, documents, status   (MCP)
 services/ocr/         tool service: PDF text + image OCR             (MCP, no policy, no identity)
 services/model-mcp/   the model as a service: "which tool fits this sentence" (MCP, no tool access)
+services/mcp-ts-example/  a tool service in TypeScript: the boundary is the protocol (MCP)
 services/gateway/     the Python reference gateway + Telegram adapter (parity baseline)
 config/               policy.json, consent.json, tools.json, mcp.json  (the contract)
 scripts/parity.py     starts both gateways + services, diffs 10 decisions
@@ -326,6 +327,11 @@ chat ──▶ gateway ──▶ tools/list (boot)        ──▶ registry: na
 
 Live check from the run above: `4 tools advertised by 3 service(s)`, and the OCR answer in the
 terminal is the text out of a real PDF.
+
+The same gateway already talks to services in three languages — Go (demo tools), Python (OCR,
+model) and a TypeScript example (`services/mcp-ts-example/`). Adding the TypeScript tool cost
+**two config edits and zero lines of gateway code**; the generic `hits` renderer covers the chat
+text, and anything more specific stays in the gateway on purpose.
 
 ## Two gateways, one policy
 

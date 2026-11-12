@@ -280,10 +280,25 @@ func render(tool string, result map[string]any, callErr error) string {
 		return fmt.Sprintf("Trạng thái: game=%v, db=%v, redis=%v",
 			result["game"], result["db"], result["redis"])
 	}
+	// A tool the gateway has never heard of still gets a readable line: presentation belongs to
+	// the gateway, and requiring a new renderer for every new service is how a boundary rots.
+	if hits, ok := result["hits"].([]any); ok {
+		if len(hits) == 0 {
+			return "Không có kết quả."
+		}
+		names := []string{}
+		for _, hit := range hits {
+			if m, ok := hit.(map[string]any); ok {
+				names = append(names, asString(m["id"]))
+			}
+		}
+		return "Kết quả: " + strings.Join(names, ", ")
+	}
 	if text, ok := result["text"].(string); ok {
 		return text
 	}
-	return fmt.Sprint(result)
+	raw, _ := json.Marshal(result)
+	return string(raw)
 }
 
 func thousand(n int) string {

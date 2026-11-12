@@ -1,7 +1,7 @@
 PY := python3
 
 .PHONY: test samples test-gateway test-ocr test-model test-go parity \
-	run-gateway run-gateway-go run-mcp-demo run-model run-ocr run-adapter demo-adapter
+	run-gateway run-gateway-go run-ts-example run-mcp-demo run-model run-ocr run-adapter demo-adapter
 
 test: samples test-gateway test-ocr test-model test-go
 
@@ -36,6 +36,9 @@ run-gateway-go:
 
 run-mcp-demo:
 	cd services/gateway-go && go run ./cmd/mcp-demo -addr 127.0.0.1:8091
+
+run-ts-example:
+	cd services/mcp-ts-example && PORT=8095 node --experimental-strip-types server.ts
 
 run-model:
 	cd services/model-mcp && PORT=8097 $(PY) server.py

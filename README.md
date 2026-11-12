@@ -310,6 +310,36 @@ in `config/tools.json`, the shed answer is `503 service_busy`, and the audit log
 are 8 for `salary_self`/`docs_search`, 4 for `ocr_extract` (a PDF engine is the most expensive
 thing in the repo) and 16 for `status`.
 
+### Shared state, if there is ever a second replica
+
+Today quota, cache and audit are per-process: two replicas mean two quotas and two caches. That
+is the first thing that breaks, and it breaks in correctness, not in speed. Measured on this
+laptop, Postgres 16 in Docker, loopback, no pooler, 10 000 keys:
+
+```
+operation                              conc=1            conc=16            conc=64
+SELECT by primary key                  p50 0.13 ms       p50 0.45 ms        p50 1.00 ms  p99 29 ms
+UPsert, synchronous_commit=on          p50 2.10 ms       p50 3.75 ms        —
+UPsert, synchronous_commit=off         p50 0.16 ms       p50 0.45 ms        —
+server-side index scan                                   Execution 0.052 ms
+```
+
+Reads are cheap enough for a shared cache; **the commit is the cost**, and turning it off is
+legitimate for derived data (losing a second of cache costs one extra tool call) and not
+legitimate for a quota or a consent grant. The ordering that follows:
+
+| State | Where it belongs once there are 2+ gateways | Why |
+|---|---|---|
+| quota counters | durable, atomic (`UPDATE … RETURNING`) or Redis `INCR` | a lost increment is a promise broken |
+| cache L1/L2 | Redis, or Postgres with `synchronous_commit=off` | derived data; loss is a cache miss, not a wrong answer |
+| policy + consent | Postgres, read-mostly, cached in memory by version | must agree across replicas |
+| audit | append-only table or object storage, written async | durability matters, latency in the request path does not |
+| long jobs (many PDFs) | RabbitMQ / SQS with an idempotency key + DLQ | see below |
+
+Queues are not a replacement for a concurrency limit: a queue only helps work whose answer is
+*not needed now* (`202` + poll, which the OCR service already does). On the synchronous path a
+queue converts "slow" into "timeout", which is why the semaphore above exists.
+
 **What this does not prove.** Nothing about Go versus Python as languages, and nothing about
 event loops: both gateways are non-blocking at the socket layer. It measures two designs, one of
 which pays fsync per request. It is also why the Go cache is documented as in-memory — that is a

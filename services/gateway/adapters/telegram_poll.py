@@ -108,14 +108,14 @@ def handle_update(token: str, update: dict) -> dict:
         status, body = gateway_call({"platform_user_id": user_id,
                                      "chat_type": chat_type, "text": text})
     except Exception as e:                      # gateway down: say so, do not retry forever
-        send(token, chat_id, "Hệ thống đang lỗi, thử lại sau ít phút.")
+        send(token, chat_id, "The system is failing; please retry in a minute.")
         return {"user": user_id, "status": "gateway_unreachable", "error": str(e)}
 
     if status == 403:
-        send(token, chat_id, "Bạn chưa được cấp quyền dùng trợ lý này.")
+        send(token, chat_id, "You are not provisioned for this assistant.")
         return {"user": user_id, "status": 403}
     if status != 200:
-        send(token, chat_id, "Hệ thống đang lỗi, thử lại sau ít phút.")
+        send(token, chat_id, "The system is failing; please retry in a minute.")
         return {"user": user_id, "status": status, "ms": int((time.time() - started) * 1000), "body": body}
 
     # chat reply goes where the message came from, but a private result NEVER goes to a group

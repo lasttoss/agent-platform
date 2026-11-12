@@ -50,7 +50,7 @@ of asserting them: the Go list is the honest one, and it changes with what is ru
 go run ./cmd/mcp-demo -addr 127.0.0.1:8091        # terminal 1 (demo tools)
 go run . -addr 127.0.0.1:8090                     # terminal 2 (gateway)
 curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
-  -d '{"platform_user_id":"1001","chat_type":"dm","text":"lương tháng này của tôi"}'
+  -d '{"platform_user_id":"1001","chat_type":"dm","text":"salary this month"}'
 ```
 
 Flags: `-policy -consent -tools -mcp -addr -audit`. Defaults resolve from both the service

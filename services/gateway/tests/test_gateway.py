@@ -109,7 +109,7 @@ class GatewayTest(unittest.TestCase):
         try:
             code, body = self.ask("thời tiết hôm nay thế nào", chat="group_internal")
             self.assertEqual(code, 200)
-            self.assertEqual(body["chat_reply"], "Mình chưa có công cụ cho việc này.")
+            self.assertEqual(body["chat_reply"], "I have no tool for that.")
             self.assertNotIn("MODEL-ANSWER", body["chat_reply"])
             self.assertEqual(calls["count"], 1)          # one turn, tools offered, prose discarded
         finally:
@@ -127,7 +127,7 @@ class GatewayTest(unittest.TestCase):
             code, body = self.ask("deploy production now", chat="dm")
             self.assertEqual(code, 200)
             self.assertEqual(body["denied_tool"], "deploy_prod")
-            self.assertIn("không có quyền", body["chat_reply"])
+            self.assertIn("permission", body["chat_reply"])
             self.assertEqual(executed, [], "a destructive tool was executed")
             offered = {t["function"]["name"] for t in calls["last_request"]["tools"]}
             self.assertNotIn("deploy_prod", offered, "deploy_prod was offered to the model")

@@ -119,21 +119,21 @@ def _render(text: str, tool: str, result: dict, principal: dict) -> str:
     facts = json.dumps(result, ensure_ascii=False)
     if tool == "ocr_extract":
         if result.get("error"):
-            base = f"Dịch vụ OCR trả lỗi: {result['error']}"
+            base = f"OCR service error: {result['error']}"
         else:
             head = (result.get("text") or "").strip().splitlines()[:3]
-            base = (f"{result.get('chars', 0)} ký tự, {result.get('pages', 1)} trang, "
+            base = (f"{result.get('chars', 0)} characters, {result.get('pages', 1)} page(s), "
                     f"engine {result.get('engine')}. " + " / ".join(head))
     elif tool == "salary_self":
         if not result.get("found"):
-            base = "Không tìm thấy bản ghi lương của bạn."
+            base = "No salary record found for you."
         else:
             amount = f"{result['amount']:,}".replace(",", ".")
-            base = f"Lương tháng này của bạn là {amount} {result['currency']}."
+            base = f"This month's salary is {amount} {result['currency']}."
     elif tool == "docs_search":
-        base = "Tài liệu liên quan: " + (", ".join(h["id"] for h in result["hits"]) or "không có")
+        base = "Matching documents: " + (", ".join(h["id"] for h in result["hits"]) or "không có")
     else:
-        base = "Trạng thái: " + ", ".join(f"{k}={v}" for k, v in result["services"].items())
+        base = "Status: " + ", ".join(f"{k}={v}" for k, v in result["services"].items())
 
     polished, usage = model.complete(
         "You are a terse assistant. Keep every number exactly as given. "
@@ -196,7 +196,7 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
                 _audit({"user": uid, "chat": chat, "decision": "tool_not_allowed",
                         "tool": blocked[0]["name"], "offered": visible})
                 return 200, {"delivered": "chat", "dm": None,
-                             "chat_reply": "Mình không có quyền làm việc này.",
+                             "chat_reply": "I don't have permission to do that here.",
                              "denied_tool": blocked[0]["name"],
                              "tools_visible": visible, "tools_offered": len(offered),
                              "usage": turn["usage"]}
@@ -213,7 +213,7 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
                 "You are a terse assistant. Answer in the user's language.", text)
             decision = "free_chat"
         else:
-            reply, usage = "Mình chưa có công cụ cho việc này.", {
+            reply, usage = "I have no tool for that.", {
                 "prompt_tokens": 0, "completion_tokens": 0, "mock": True}
             decision = "no_tool"
         _charge(principal["user_id"], usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0), limit_req, limit_tok)
@@ -253,7 +253,7 @@ def handle(payload: dict, rules: dict, consent: dict | None = None) -> tuple[int
         _audit({"user": uid, "chat": chat, "tool": tool, "decision": "private_delivery"})
         # `dm` is an object, not a bare string: text to deliver + the reason it cannot
         # be shown in this chat. The adapter must read `dm.text`.
-        return 200, {"delivered": "dm", "chat_reply": "Mình gửi riêng cho bạn nhé.",
+        return 200, {"delivered": "dm", "chat_reply": "Sending that to you privately.",
                      "dm": {"text": answer, "reason": "personal_data_in_shared_chat"},
                      "tools_visible": visible, "usage": usage}
 

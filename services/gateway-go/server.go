@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,6 +36,12 @@ type Server struct {
 	Reg     *Registry
 	Cache   *Cache
 	Audit   string
+
+	// AdapterToken is what makes "identity comes from the transport" true on HTTP too. Without
+	// it, anyone who can reach /v1/respond can claim to be any user in the policy — loopback
+	// binding is a network answer to an authorization question, and it stops being enough the
+	// moment the gateway is not on the same host as its adapter.
+	AdapterToken string
 
 	mu    sync.Mutex
 	usage map[string]map[string]int // userID → {"requests", "tokens"}
@@ -226,7 +233,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 					s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 						"decision": "tool_not_allowed", "tool": blocked, "offered": visible})
 					return 200, map[string]any{"delivered": "chat", "dm": nil,
-						"chat_reply":  "Mình không có quyền làm việc này.",
+						"chat_reply":  "I don't have permission to do that here.",
 						"denied_tool": blocked, "tools_visible": visible,
 						"tools_offered": len(schemas)}
 				}
@@ -244,7 +251,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "no_tool", "tools_visible": visible})
 		return 200, map[string]any{"delivered": "chat",
-			"chat_reply": "Mình chưa có công cụ cho việc này.", "dm": nil,
+			"chat_reply": "I have no tool for that.", "dm": nil,
 			"tools_visible": visible}
 	}
 
@@ -278,7 +285,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "private_delivery", "tool": tool})
 		return 200, map[string]any{"delivered": "dm",
-			"chat_reply":    "Mình gửi riêng cho bạn nhé.",
+			"chat_reply":    "Sending that to you privately.",
 			"dm":            map[string]any{"text": answer, "reason": "personal_data_in_shared_chat"},
 			"tools_visible": visible}
 	}
@@ -290,32 +297,32 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 
 func render(tool string, result map[string]any, callErr error) string {
 	if callErr != nil {
-		return "Dịch vụ trả lỗi: " + callErr.Error()
+		return "Service error: " + callErr.Error()
 	}
 	switch tool {
 	case "salary_self":
 		found, _ := result["found"].(bool)
 		if !found {
-			return "Không tìm thấy bản ghi lương của bạn."
+			return "No salary record found for you."
 		}
-		return fmt.Sprintf("Lương tháng này của bạn là %s %s.",
+		return fmt.Sprintf("This month's salary is %s %s.",
 			thousand(asInt(result["amount"])), asString(result["currency"]))
 	case "docs_search":
 		hits, _ := result["hits"].([]any)
 		if len(hits) == 0 {
-			return "Không tìm thấy tài liệu phù hợp."
+			return "No matching documents found."
 		}
 		first, _ := hits[0].(map[string]any)
-		return "Tài liệu liên quan: " + asString(first["id"])
+		return "Matching documents: " + asString(first["id"])
 	case "status":
-		return fmt.Sprintf("Trạng thái: game=%v, db=%v, redis=%v",
+		return fmt.Sprintf("Status: game=%v, db=%v, redis=%v",
 			result["game"], result["db"], result["redis"])
 	}
 	// A tool the gateway has never heard of still gets a readable line: presentation belongs to
 	// the gateway, and requiring a new renderer for every new service is how a boundary rots.
 	if hits, ok := result["hits"].([]any); ok {
 		if len(hits) == 0 {
-			return "Không có kết quả."
+			return "No results."
 		}
 		names := []string{}
 		for _, hit := range hits {
@@ -323,7 +330,7 @@ func render(tool string, result map[string]any, callErr error) string {
 				names = append(names, asString(m["id"]))
 			}
 		}
-		return "Kết quả: " + strings.Join(names, ", ")
+		return "Result: " + strings.Join(names, ", ")
 	}
 	if text, ok := result["text"].(string); ok {
 		return text
@@ -347,6 +354,50 @@ func thousand(n int) string {
 const systemPrompt = "You are a gateway assistant. Use a tool whenever one fits. " +
 	"Never invent numbers, names or status: if no tool returns them, say you do not have that information."
 
+// authorizeAdapter fails closed only when a token is configured: an unset token is the
+// single-host setup this repo ships, not a silent bypass of a configured one.
+func (s *Server) authorizeAdapter(r *http.Request) bool {
+	if s.AdapterToken == "" {
+		return true
+	}
+	got := r.Header.Get("X-Adapter-Token")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.AdapterToken)) == 1
+}
+
+// Whoami answers, for one caller in one chat, what the model is allowed to see and why each
+// hidden tool is hidden. It is the RBAC surface: read-only, no model call, no quota.
+func (s *Server) Whoami(userID, chatType string) (int, map[string]any) {
+	pal, err := s.Policy.Resolve(userID, chatType)
+	if err != nil {
+		if d, ok := err.(Denied); ok {
+			return http.StatusForbidden, map[string]any{"denied": d.Code, "reason": d.Message}
+		}
+		return http.StatusForbidden, map[string]any{"denied": "denied", "reason": err.Error()}
+	}
+	verdicts := s.Policy.Explain(pal, s.Reg.Meta, s.Reg, s.Consent)
+
+	s.mu.Lock()
+	used := map[string]int{}
+	for k, v := range s.usage[pal.UserID] {
+		used[k] = v
+	}
+	s.mu.Unlock()
+
+	return http.StatusOK, map[string]any{
+		"user": map[string]any{
+			"id": pal.UserID, "name": pal.Name, "role": pal.Role, "workspace": pal.Workspace,
+			"chat_type": pal.ChatType, "personal_data": pal.PersonalOK,
+			"free_chat": s.Policy.FreeChat(pal),
+		},
+		"quota": map[string]any{
+			"requests_used": used["requests"], "requests_per_day": s.Policy.Quota.RequestsPerDay,
+			"tokens_used": used["tokens"], "tokens_per_day": s.Policy.Quota.TokensPerDay,
+		},
+		"tools":  verdicts,
+		"counts": Counts(verdicts),
+	}
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -365,7 +416,23 @@ func (s *Server) Routes() http.Handler {
 		stats["tools_advertised"] = names
 		writeJSON(w, 200, stats)
 	})
+	mux.HandleFunc("/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !s.authorizeAdapter(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"denied": "bad_adapter_token"})
+			return
+		}
+		code, body := s.Whoami(r.URL.Query().Get("user"), r.URL.Query().Get("chat"))
+		writeJSON(w, code, body)
+	})
 	mux.HandleFunc("/v1/respond", func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorizeAdapter(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"denied": "bad_adapter_token"})
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeJSON(w, 405, map[string]any{"error": "method_not_allowed"})
 			return

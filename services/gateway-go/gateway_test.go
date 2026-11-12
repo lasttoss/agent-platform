@@ -148,7 +148,7 @@ func TestUnknownUserIsRejected(t *testing.T) {
 func TestDMGetsPersonalAnswerOverMCP(t *testing.T) {
 	h := newHarness(t)
 	body := h.ok(t, "1001", "dm", "lương tháng này của tôi")
-	if body["chat_reply"] != "Lương tháng này của bạn là 12.345.000 VND." {
+	if body["chat_reply"] != "This month's salary is 12.345.000 VND." {
 		t.Fatalf("unexpected reply: %v", body["chat_reply"])
 	}
 	if calls := h.lastToolCalls(); len(calls) != 1 || calls[0] != "salary_self" {
@@ -171,10 +171,10 @@ func TestCallerIdentityTravelsInTransportNotArguments(t *testing.T) {
 func TestPersonalAnswerInGroupGoesToDM(t *testing.T) {
 	h := newHarness(t)
 	body := h.ok(t, "1001", "group_internal", "lương tháng này của tôi")
-	if body["delivered"] != "dm" || body["chat_reply"] != "Mình gửi riêng cho bạn nhé." {
+	if body["delivered"] != "dm" || body["chat_reply"] != "Sending that to you privately." {
 		t.Fatalf("a group must not carry the number: %v", body)
 	}
-	if body["dm"].(map[string]any)["text"] != "Lương tháng này của bạn là 12.345.000 VND." {
+	if body["dm"].(map[string]any)["text"] != "This month's salary is 12.345.000 VND." {
 		t.Fatalf("dm text wrong: %v", body["dm"])
 	}
 }
@@ -193,10 +193,10 @@ func TestPublicGroupHasNoPersonalTool(t *testing.T) {
 
 func TestNoDiacriticsIsUnderstood(t *testing.T) {
 	h := newHarness(t)
-	if got := h.ok(t, "1001", "dm", "luong thang nay cua toi")["chat_reply"]; got != "Lương tháng này của bạn là 12.345.000 VND." {
+	if got := h.ok(t, "1001", "dm", "luong thang nay cua toi")["chat_reply"]; got != "This month's salary is 12.345.000 VND." {
 		t.Fatalf("folded input not understood: %v", got)
 	}
-	if got := h.ok(t, "1001", "dm", "tai lieu runbook")["chat_reply"]; got != "Tài liệu liên quan: runbook-restart" {
+	if got := h.ok(t, "1001", "dm", "tai lieu runbook")["chat_reply"]; got != "Matching documents: runbook-restart" {
 		t.Fatalf("folded docs query wrong: %v", got)
 	}
 }
@@ -267,7 +267,7 @@ func TestAToolWithNoRunningServerIsInvisible(t *testing.T) {
 			t.Fatalf("%s is not served by any running service but was offered: %v", missing, visible)
 		}
 	}
-	if body := h.ok(t, "1001", "dm", "mail của tôi"); body["chat_reply"] != "Mình chưa có công cụ cho việc này." {
+	if body := h.ok(t, "1001", "dm", "mail của tôi"); body["chat_reply"] != "I have no tool for that." {
 		t.Fatalf("expected an honest refusal, got %v", body["chat_reply"])
 	}
 }
@@ -297,7 +297,7 @@ func TestSalaryIsNeverCached(t *testing.T) {
 func TestCacheDoesNotLeakBetweenUsers(t *testing.T) {
 	h := newHarness(t)
 	h.ok(t, "1001", "dm", "lương tháng này của tôi")
-	if got := h.ok(t, "2002", "dm", "lương tháng này của tôi")["chat_reply"]; got != "Lương tháng này của bạn là 9.876.000 VND." {
+	if got := h.ok(t, "2002", "dm", "lương tháng này của tôi")["chat_reply"]; got != "This month's salary is 9.876.000 VND." {
 		t.Fatalf("another user's salary leaked: %v", got)
 	}
 }
@@ -314,7 +314,7 @@ func TestQuotaIsEnforced(t *testing.T) {
 
 func TestNoToolQuestionIsRefusedWithoutAModel(t *testing.T) {
 	h := newHarness(t)
-	if got := h.ok(t, "1001", "dm", "thời tiết hôm nay thế nào")["chat_reply"]; got != "Mình chưa có công cụ cho việc này." {
+	if got := h.ok(t, "1001", "dm", "thời tiết hôm nay thế nào")["chat_reply"]; got != "I have no tool for that." {
 		t.Fatalf("ungrounded answer without a model: %v", got)
 	}
 }
@@ -343,7 +343,7 @@ func TestAModelChosenToolActuallyRuns(t *testing.T) {
 		"tool_calls": []any{map[string]any{"name": "docs_search",
 			"arguments": map[string]any{"q": "runbook"}}}}))
 	body := h.ok(t, "1001", "dm", "tìm giúp tôi cái gì đó")
-	if body["chat_reply"] != "Tài liệu liên quan: runbook-restart" {
+	if body["chat_reply"] != "Matching documents: runbook-restart" {
 		t.Fatalf("model-chosen tool did not run: %v", body)
 	}
 	if calls := h.lastToolCalls(); len(calls) != 1 || calls[0] != "docs_search" {
@@ -485,7 +485,7 @@ func TestPublicGroupGetsNoToolNotServiceDown(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("expected 200, got %d: %v", code, body)
 	}
-	if body["chat_reply"] != "Mình chưa có công cụ cho việc này." {
+	if body["chat_reply"] != "I have no tool for that." {
 		t.Fatalf("wrong answer for a chat that has no such tool: %v", body["chat_reply"])
 	}
 }
@@ -510,8 +510,8 @@ func TestSemanticCacheDoesNotCrossTools(t *testing.T) {
 	h := newHarness(t)
 	h.ok(t, "1001", "dm", "trạng thái hệ thống")
 	body := h.ok(t, "1001", "dm", "tài liệu hệ thống")
-	if got := body["chat_reply"]; got != "Không tìm thấy tài liệu phù hợp." &&
-		got != "Tài liệu liên quan: runbook-restart" {
+	if got := body["chat_reply"]; got != "No matching documents found." &&
+		got != "Matching documents: runbook-restart" {
 		t.Fatalf("a status answer was reused for a documents question: %v", got)
 	}
 }
@@ -535,7 +535,7 @@ func TestAToolFromAnotherLanguageIsReachableWithoutGatewayCode(t *testing.T) {
 		PrivateTools: h.Policy.Chats["dm"].PrivateTools, PersonalData: true, FreeChat: true}
 
 	body := h.ok(t, "1001", "dm", "tra giúp tôi cái gì đó")
-	if body["chat_reply"] != "Kết quả: adr-cache" {
+	if body["chat_reply"] != "Result: adr-cache" {
 		t.Fatalf("a tool from another service did not answer: %v", body["chat_reply"])
 	}
 }

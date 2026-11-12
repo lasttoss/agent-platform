@@ -82,7 +82,7 @@ class AdapterTest(unittest.TestCase):
         self.fake.push(9999, 9999, "private", "tài liệu runbook")
         self._drain()
         self.assertEqual(len(self.fake.sent), 1)
-        self.assertIn("chưa được cấp quyền", self.fake.sent[0]["text"])
+        self.assertIn("not provisioned", self.fake.sent[0]["text"])
 
     def test_offset_advances_so_updates_are_not_replayed(self):
         self.fake.push(1001, 1001, "private", "trạng thái")

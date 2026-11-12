@@ -1,5 +1,11 @@
 # agent-gateway
 
+> **Reference implementation, not the deployment.** The shipped gateway is
+> `services/gateway-go`. This copy exists to be an independent second implementation of the same
+> decisions: `scripts/parity.py` runs both and diffs the results, so a divergence fails a test
+> instead of reaching a user.
+
+
 A minimal policy gateway that sits between a chat client (Telegram, Discord) and an
 agent runtime. It exists to prove one thing with code instead of prose:
 
@@ -20,16 +26,16 @@ make demo    # four end-to-end calls showing the same question in three chat typ
 
 | chat type | what the caller sees in the chat | delivered |
 |---|---|---|
-| `dm` | `Lương tháng này của bạn là 12.345.000 VND.` | chat |
-| `group_internal` | `Mình gửi riêng cho bạn nhé.` + the number by DM | dm |
-| `group_public` | `Mình chưa có công cụ cho việc này.` | chat |
+| `dm` | `This month's salary is 12.345.000 VND.` | chat |
+| `group_internal` | `Sending that to you privately.` + the number by DM | dm |
+| `group_public` | `I have no tool for that.` | chat |
 | unknown user | `403 {"denied": {"code": "unknown_user"}}` | — |
 
 ## API
 
 ```
 POST /v1/respond
-{ "platform_user_id": "1001", "chat_type": "dm", "text": "lương tháng này của tôi" }
+{ "platform_user_id": "1001", "chat_type": "dm", "text": "salary this month" }
 ```
 
 `chat_type` is one of `dm`, `group_internal`, `group_public`. In a real deployment the

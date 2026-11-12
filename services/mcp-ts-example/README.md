@@ -31,7 +31,7 @@ Verified end to end on 2026-11-12 with all three configs, the demo service and a
 
 ```
 gateway-go on 127.0.0.1:18090 — 4 tools advertised by 3 service(s), model service: true
-{"chat_reply": "Kết quả: runbook-oncall, adr-cache, policy-consent"}
+{"chat_reply": "Result: runbook-oncall, adr-cache, policy-consent"}
 {"chat": "dm", "decision": "answered", "tool": "wiki_search", "user": "1001"}
 ```
 

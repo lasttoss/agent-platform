@@ -128,12 +128,12 @@
       <text class="m" x="76" y="556">tested: user 1001 asks salary, user 2002 asks the same question and still gets their own number</text>
     </svg>
     <figcaption>
-      <b>Hình 2.</b> Ba tầng, ba giá khác nhau. L1 so hash của (câu đã chuẩn hoá + tool đã sort + policy
-      version + loại chat + scope) nên trùng câu là trả ngay, không gọi model. L2 so embedding trong
-      <i>cùng scope</i> để bắt câu đổi cách nói. L3 không phải cache của mình: nó là việc giữ phần đầu prompt
-      byte-identical để provider tự cache — đổi thứ tự tool hay tăng policy version là mất. Scope là ranh
-      giới bảo mật: đáp án cá nhân khoá theo người, và những tool như lương hay mail đặt TTL = 0 để không
-      bao giờ được phục vụ lại.
+      <b>Figure 2.</b> Three layers, three different prices. L1 compares a hash of (normalised question +
+      sorted tools + policy version + chat type + scope), so a repeated question answers without a model
+      call. L2 compares embeddings inside <i>the same scope</i> to catch a rephrasing. L3 is not our cache
+      at all: it is keeping the prompt prefix byte-identical so the provider caches it — reordering tools
+      or bumping the policy version loses it. Scope is the security boundary: personal answers are keyed
+      per user, and tools like salary or mail set TTL = 0 so they are never served twice.
     </figcaption>
   </figure>
 </main>

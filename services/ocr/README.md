@@ -91,7 +91,7 @@ $ python3 cli.py --chat dm "ocr CV-TranTrungDung-VI.pdf"
 5792 ký tự, 2 trang, engine pdftotext. TRẦN TRUNG DŨNG / Backend Engineer ...
 
 $ python3 cli.py --chat group_internal "ocr CV-TranTrungDung-VI.pdf"
-"Mình gửi riêng cho bạn nhé."   → content delivered by DM
+"Sending that to you privately."   → content delivered by DM
 ```
 
 The audit log records the difference, which is the point of the split:

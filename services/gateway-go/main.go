@@ -78,5 +78,9 @@ func main() {
 		os.MkdirAll(dir, 0o755)
 	}
 	srv := NewServer(pol, consent, reg, *audit)
+	srv.AdapterToken = os.Getenv("ADAPTER_TOKEN")
+	if srv.AdapterToken != "" {
+		fmt.Println("adapter token required on /v1/respond and /v1/whoami")
+	}
 	log.Fatal(http.ListenAndServe(*addr, srv.Routes()))
 }

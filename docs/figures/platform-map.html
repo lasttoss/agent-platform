@@ -128,11 +128,11 @@
       <text class="m" x="80" y="490">tool lists per chat · auth type + scopes per provider · who granted what · encrypted tokens · queue state · JSONL decisions</text>
     </svg>
     <figcaption>
-      <b>Hình 1.</b> Bốn quyết định của hệ thống, nhìn trong một hình: danh tính lấy từ sự kiện có chữ ký
-      của nền tảng chat; quyền do gateway quyết và <i>lọc trước</i> khi model nhìn thấy danh sách tool;
-      worker không có danh tính, không có khoá nền tảng; và dữ liệu cá nhân hoặc của người thứ ba chỉ đi
-      đường DM, còn nhóm chỉ nhận số liệu tổng hợp. Thêm một tool mới không mở rộng quyền của ai — nó chỉ
-      thêm một dòng vào <code>policy.json</code> và một dòng vào audit.
+      <b>Figure 1.</b> Four decisions in one picture: identity comes from a signed event on the chat
+      platform; authority is decided by the gateway and <i>filtered before</i> the model ever sees a tool
+      list; a worker holds no identity and no platform key; and personal or third-party data only travels
+      by DM, while a group only receives aggregate answers. Adding a tool widens nobody's authority — it
+      adds one line to <code>policy.json</code> and one line to the audit log.
     </figcaption>
   </figure>
 </main>

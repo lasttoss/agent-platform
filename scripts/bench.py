@@ -27,7 +27,7 @@ PY_DIR = ROOT / "services" / "gateway"
 DEMO_PORT, GO_PORT, PY_PORT = 8191, 8192, 8193
 
 PAYLOAD = json.dumps({"platform_user_id": "1001", "chat_type": "dm",
-                      "text": "tài liệu runbook"}).encode()
+                      "text": "docs runbook"}).encode()
 
 
 def port_free(port: int) -> bool:

@@ -20,14 +20,16 @@ amount lives outside git, in `config/local.json`.
 ## Layout
 
 ```
-services/gateway-go/  THE GATEWAY — policy, consent, quota, cache, audit, MCP client
+services/gateway-go/  THE GATEWAY AND PROXY — policy, roles, consent, quota, cache, audit, MCP client
+  rbac.go             one reason code per hidden tool; backs GET /v1/whoami
   cmd/mcp-demo/       demo tool service: salary, documents, status   (MCP)
 services/ocr/         tool service: PDF text + image OCR             (MCP, no policy, no identity)
 services/model-mcp/   the model as a service: "which tool fits this sentence" (MCP, no tool access)
 services/mcp-ts-example/  a tool service in TypeScript: the boundary is the protocol (MCP)
-services/gateway/     the Python reference gateway + Telegram adapter (parity baseline)
+services/gateway/     Python REFERENCE gateway + Telegram adapter (parity oracle, not the deployment)
 config/               policy.json, consent.json, tools.json, mcp.json  (the contract)
 scripts/parity.py     starts both gateways + services, diffs 10 decisions
+docs/rbac.md          the gates, in order, and the reason code each one produces
 docs/figures/         platform-map.png · gateway-topology.png · cache-layers.png
 ```
 
@@ -51,7 +53,7 @@ service does the reading:
 
 ```bash
 curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
-  -d '{"platform_user_id":"1001","chat_type":"dm","text":"đọc giúp tôi file samples/text.pdf"}'
+  -d '{"platform_user_id":"1001","chat_type":"dm","text":"ocr samples/text.pdf"}'
 # INVOICE 2026-11-A … Subtotal 1,234,000 VND - VAT 10 percent - Total 1,357,400 VND
 ```
 
@@ -157,8 +159,8 @@ GET  /stats/cache → {"l1_hit_rate": 0.5, "l2_hit_rate": 0.0, "tokens_saved_est
 Run it twice and the second call never reaches a model:
 
 ```bash
-python3 cli.py --chat dm "tài liệu runbook"     # miss, tool call
-python3 cli.py --chat dm "tài liệu runbook"     # {"layer": "exact"}
+python3 cli.py --chat dm "docs runbook"     # miss, tool call
+python3 cli.py --chat dm "docs runbook"     # {"layer": "exact"}
 ```
 
 Honest limit of L2 here: the shipped embedder is a hashed bag-of-words proxy, so it catches
@@ -181,7 +183,7 @@ make demo-adapter                    # offline: dm, group→DM, unknown user, re
 Behaviour that is tested, not assumed (`tests/test_adapter.py`, real HTTP to a fake Telegram API):
 
 - a personal answer in a group is delivered **to the sender's DM**, and the group only sees
-  "Mình gửi riêng cho bạn nhé."
+  "Sending that to you privately."
 - `423`/quota/403 come back as answers, not crashes: unknown user gets one refusal line
 - the update offset is persisted, so a restart does not replay old messages
 - `409 Conflict` (another process polling the same bot) exits with a clear message instead of looping
@@ -197,6 +199,9 @@ Two things only a real bot could teach, both now fixed and covered by tests:
 1. **Diacritics.** Vietnamese is typed without tones on a phone. `luong thang nay cua toi` fell
    through to "no tool for this" while `lương tháng này của tôi` worked. Intent matching and the
    cache key now both run on folded text, so `lương` and `luong` share one cache entry.
+   This is also the only Vietnamese left in the repository, on purpose: those strings are *inputs*
+   that prove the folding works. Every reply, comment, document, test name and figure caption is
+   English, so a reviewer who does not read Vietnamese can still audit all of it.
 2. **`STATE_DIR` was documented but never read.** Pointing two servers at different state dirs
    silently left both on the same `cache.db` and the same daily quota. `make_server` now honours it.
 
@@ -253,7 +258,7 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 91 tests: 22 gateway-go, 43 Python reference gateway, 21 ocr, 5 model service
+make test     # 112 tests: 41 gateway-go, 45 Python reference gateway, 21 ocr, 5 model service
 make parity   # starts both gateways + the MCP services, diffs the decisions (10 + 60 generated)
 PARITY_FUZZ=300 python3 scripts/parity.py   # same, 300 generated cases
 ```
@@ -363,7 +368,7 @@ the owner's powers. A field that looks like a control but is not one is worse th
 }
 ```
 
-Two rules make it safe:
+Two rules make it safe (full reference: [docs/rbac.md](docs/rbac.md)):
 
 1. **A role narrows, never widens.** The effective set is
    `chat allowlist ∩ role grant ∩ consent ∩ advertised ∩ not destructive`. `"*"` means "as much as
@@ -380,8 +385,51 @@ What a role still cannot decide, and why the other gates stay:
 | may the gateway read this person's Drive? | per-user consent grant with a scope | delegated consent is per-user and revocable; a role cannot hold it |
 | is the tool available right now? | MCP discovery | runtime fact, not a permission |
 
+Every hidden tool has exactly one reason code, and `GET /v1/whoami?user=&chat=` prints it:
+
+```
+docs_search      visible  delivery=chat
+salary_self      hidden   blocked_by=not_in_chat
+drive_search     hidden   blocked_by=service_not_advertising
+```
+
+That is the difference between "the model is broken" and "this chat is not allowed to see salary",
+and it is a query instead of a code read.
+
 At two or more replicas the roles table moves to Postgres (read-mostly, cached in memory by
 policy version) — the same rule as the rest of the shared state above.
+
+## The gateway is a proxy; the services choose their own language
+
+`services/gateway-go` is the only component that terminates a client request, and it owns no
+domain logic: no PDF parsing, no salary lookup, no model call. It resolves identity, applies roles
+and consent, enforces quota, writes the audit line, and **proxies** the call to whichever MCP
+server advertises the tool. Everything else is a service that could have been written in anything.
+
+| Component | Language | Why that language | What it must not do |
+|---|---|---|---|
+| `services/gateway-go` | Go, stdlib only | a proxy is I/O and policy; 8.7 MB binary, no runtime, a semaphore instead of a queue | parse a PDF, call a model, know what a salary is |
+| `services/ocr` | Python | one example of an MCP *service*: the PDF text layer and OCR engines are better in Python | decide who may call it, or see an identity |
+| `services/model-mcp` | Python | the model is a service too, reachable only as an MCP tool | touch another tool, or hold a key the gateway needs |
+| `services/mcp-ts-example` | TypeScript, zero dependencies | proof that a new capability costs 2 config lines and 0 gateway lines | anything the other services do not do |
+
+Adding a capability in a language that does not exist in this repo yet is a row in
+`config/mcp.json`, a row in `config/tools.json`, and a server that speaks `tools/list` and
+`tools/call`. The gateway is not recompiled and its tests do not change:
+
+```
+language is not a trust boundary — the protocol, the allowlist, the policy facts and the
+identity header are. That is the whole claim, and TypeScript is here to falsify it.
+```
+
+The honest cost of the choice is deployment, not architecture: an empty Node process idles at
+44.8 MB against the Go gateway's 8.6 MB (measured, see *Footprint*). Python appears twice because
+it is the right tool for OCR and for the model client, not because the platform is Python.
+
+`services/gateway/` (Python) is a **reference implementation**, kept as the parity oracle: it
+re-implements the same decisions independently so a disagreement between the two shows up as a
+failing case instead of a bug report. It is not the deployment path, and the README says so where
+the two differ.
 
 ## The MCP boundary
 

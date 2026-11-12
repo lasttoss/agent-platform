@@ -349,6 +349,40 @@ The measurement did find one real bug: sharing one `sqlite3` connection across r
 without a lock dropped 381 of 640 connections with `InterfaceError: bad parameter or other API
 misuse`. `CacheStore` now serialises its connection; the Python gateway answers 640/640 too.
 
+## Roles: what RBAC decides, and what it cannot
+
+`policy.json` now has a `roles` table, and it is not decoration. Before this change `role` was
+parsed, attached to the principal, and **never consulted**: a user marked `"guest"` had exactly
+the owner's powers. A field that looks like a control but is not one is worse than no field.
+
+```
+"roles": {
+  "owner": {"tools": ["*"]},
+  "dev":   {"tools": ["salary_self", "docs_search", "status", "ocr_extract"]},
+  "guest": {"tools": ["docs_search", "status"]}
+}
+```
+
+Two rules make it safe:
+
+1. **A role narrows, never widens.** The effective set is
+   `chat allowlist ∩ role grant ∩ consent ∩ advertised ∩ not destructive`. `"*"` means "as much as
+   this chat already allows" — never more, so a new role cannot become a backdoor.
+2. **An undefined role fails the load.** A user pointing at a role that does not exist is a
+   configuration error, not a person with default access.
+
+What a role still cannot decide, and why the other gates stay:
+
+| Question | Answered by | Why not RBAC |
+|---|---|---|
+| may this person use `salary_self`? | role + chat + consent | yes, RBAC fits |
+| may the answer be posted in this group? | `personal` flag + `personal_data` | a role is about *who*, delivery is about *what the data is* |
+| may the gateway read this person's Drive? | per-user consent grant with a scope | delegated consent is per-user and revocable; a role cannot hold it |
+| is the tool available right now? | MCP discovery | runtime fact, not a permission |
+
+At two or more replicas the roles table moves to Postgres (read-mostly, cached in memory by
+policy version) — the same rule as the rest of the shared state above.
+
 ## The MCP boundary
 
 There is exactly one way for the gateway to reach a capability: JSON-RPC `tools/call` to a URL in

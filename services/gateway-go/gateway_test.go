@@ -592,3 +592,60 @@ func TestSaturatedToolShedsInsteadOfQueueing(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// `role` was parsed and ignored: a user marked "guest" had exactly the owner's powers. These two
+// tests pin the fix — a role narrows, and an undefined role refuses to load.
+func TestRoleNarrowsTheChatAllowlist(t *testing.T) {
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	roles := doc["roles"].(map[string]any)
+	roles["intern"] = map[string]any{"tools": []string{"docs_search"}}
+	doc["users"].(map[string]any)["4004"] = map[string]any{"name": "Intern", "role": "intern", "workspace": "x"}
+	path := filepath.Join(t.TempDir(), "policy.json")
+	out, _ := json.Marshal(doc)
+	os.WriteFile(path, out, 0o644)
+
+	pol, err := LoadPolicy(path)
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	pal, err := pol.Resolve("4004", "dm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]ToolMeta{"salary_self": {Personal: true}, "docs_search": {}, "status": {}}
+	reg := NewRegistry(meta, nil) // nothing advertised; role check must work without a registry
+	visible := pol.VisibleTools(pal, meta, reg, nil)
+	if len(visible) != 0 {
+		t.Fatalf("role intern should be limited to docs_search, and nothing is advertised: %v", visible)
+	}
+	if pol.roleAllows(pal, "salary_self") {
+		t.Fatal("the intern role must not allow salary_self")
+	}
+	if !pol.roleAllows(pal, "docs_search") {
+		t.Fatal("the intern role should allow docs_search")
+	}
+}
+
+func TestUndefinedRoleRefusesToLoad(t *testing.T) {
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	json.Unmarshal(raw, &doc)
+	doc["users"].(map[string]any)["5005"] = map[string]any{"name": "Ghost", "role": "nobody", "workspace": "x"}
+	path := filepath.Join(t.TempDir(), "policy.json")
+	out, _ := json.Marshal(doc)
+	os.WriteFile(path, out, 0o644)
+
+	if _, err := LoadPolicy(path); err == nil {
+		t.Fatal("a user with an undefined role must fail the load, not inherit the chat allowlist")
+	}
+}

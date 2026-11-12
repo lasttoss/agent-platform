@@ -17,6 +17,27 @@
       "workspace": "dung"
     }
   },
+  "roles": {
+    "owner": {
+      "tools": [
+        "*"
+      ]
+    },
+    "dev": {
+      "tools": [
+        "salary_self",
+        "docs_search",
+        "status",
+        "ocr_extract"
+      ]
+    },
+    "guest": {
+      "tools": [
+        "docs_search",
+        "status"
+      ]
+    }
+  },
   "chats": {
     "dm": {
       "tools": [

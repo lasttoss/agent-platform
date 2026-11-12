@@ -12,6 +12,7 @@ import (
 type Policy struct {
 	AllowUnknown bool                `json:"allow_unknown_users"`
 	Users        map[string]User     `json:"users"`
+	Roles        map[string]RoleConf `json:"roles"`
 	Chats        map[string]ChatConf `json:"chats"`
 	Quota        Quota               `json:"quota"`
 }
@@ -27,6 +28,12 @@ type ChatConf struct {
 	PrivateTools []string `json:"private_tools"`
 	PersonalData bool     `json:"personal_data"`
 	FreeChat     bool     `json:"free_chat"`
+}
+
+// RoleConf is a role's tool grant. `"*"` means "everything the chat already allows": a role can
+// only narrow the chat allowlist, never widen it — widening is how a role becomes a backdoor.
+type RoleConf struct {
+	Tools []string `json:"tools"`
 }
 
 type Quota struct {
@@ -63,6 +70,17 @@ func LoadPolicy(path string) (*Policy, error) {
 	if p.Users == nil || p.Chats == nil || p.Quota.RequestsPerDay == 0 {
 		return nil, Denied{"policy_invalid", "policy missing users, chats or quota"}
 	}
+	// `role` used to be parsed and then ignored, which made a user marked "guest" as powerful as
+	// an owner. If a roles table exists, every user's role must be in it: an unknown role fails
+	// the load instead of silently granting the chat's full allowlist.
+	if len(p.Roles) > 0 {
+		for id, user := range p.Users {
+			if _, ok := p.Roles[user.Role]; !ok {
+				return nil, Denied{"policy_invalid",
+					"user " + id + " has undefined role: " + user.Role}
+			}
+		}
+	}
 	return &p, nil
 }
 
@@ -98,8 +116,24 @@ func (p *Policy) VisibleTools(pal Principal, meta map[string]ToolMeta, reg *Regi
 	return out
 }
 
+// roleAllows is a narrowing gate: without a roles table it allows everything (legacy policies),
+// with one it allows only what the role names.
+func (p *Policy) roleAllows(pal Principal, tool string) bool {
+	if len(p.Roles) == 0 {
+		return true
+	}
+	role, ok := p.Roles[pal.Role]
+	if !ok {
+		return false // fail closed, even if the loader was bypassed
+	}
+	return contains(role.Tools, "*") || contains(role.Tools, tool)
+}
+
 func (p *Policy) maySee(pal Principal, name string, meta map[string]ToolMeta, reg *Registry,
 	consent map[string]map[string][]string) bool {
+	if !p.roleAllows(pal, name) {
+		return false
+	}
 	m, known := meta[name]
 	if !known || m.Destructive || !reg.Advertises(name) {
 		return false
@@ -117,6 +151,9 @@ func (p *Policy) RoutableTools(pal Principal, meta map[string]ToolMeta, reg *Reg
 	conf := p.chat(pal)
 	out := []string{}
 	for _, name := range append(append([]string{}, conf.Tools...), conf.PrivateTools...) {
+		if !p.roleAllows(pal, name) {
+			continue
+		}
 		m, known := meta[name]
 		// A private tool is exactly the personal one that may RUN here but must not be POSTED
 		// here, so the personal check belongs to visibility, not to routability.
@@ -152,7 +189,7 @@ func ConsentAllows(pal Principal, spec ToolMeta, consent map[string]map[string][
 func (p *Policy) ConfiguredFor(pal Principal, tool string, meta map[string]ToolMeta,
 	consent map[string]map[string][]string) bool {
 	m, known := meta[tool]
-	if !known || m.Destructive {
+	if !known || m.Destructive || !p.roleAllows(pal, tool) {
 		return false
 	}
 	conf := p.chat(pal)
@@ -179,6 +216,10 @@ func (p *Policy) Decide(pal Principal, tool string, spec ToolMeta, known bool) (
 	}
 	if !inChat && !inPrivate {
 		return "", Denied{"tool_not_in_chat", fmt.Sprintf("%s is not enabled for %s", tool, pal.ChatType)}
+	}
+	if !p.roleAllows(pal, tool) {
+		return "", Denied{"tool_not_in_role",
+			fmt.Sprintf("role %s may not use %s", pal.Role, tool)}
 	}
 	if spec.Personal && !pal.PersonalOK {
 		return "private", nil

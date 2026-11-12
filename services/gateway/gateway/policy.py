@@ -60,7 +60,28 @@ def load_rules(path: str | Path) -> dict:
         if field not in rules:
             # Fail closed: a malformed policy must never degrade into "allow".
             raise Denied("policy_invalid", f"policy missing field: {field}")
+    # `role` used to be read and then ignored, so a user marked "guest" was as powerful as an
+    # owner. If a roles table exists, every user's role must be in it — an undefined role fails
+    # the load instead of silently granting the chat's full allowlist.
+    roles = rules.get("roles") or {}
+    if roles:
+        for user_id, user in rules["users"].items():
+            if user.get("role") not in roles:
+                raise Denied("policy_invalid",
+                             f"user {user_id} has undefined role: {user.get('role')}")
     return rules
+
+
+def role_allows(rules: dict, principal: dict, tool: str) -> bool:
+    """A narrowing gate: a role can only restrict the chat allowlist, never widen it."""
+    roles = rules.get("roles") or {}
+    if not roles:
+        return True
+    role = roles.get(principal.get("role", ""))
+    if role is None:
+        return False  # fail closed even if the loader was bypassed
+    tools = role.get("tools", [])
+    return "*" in tools or tool in tools
 
 
 def resolve(rules: dict, platform_user_id: str, chat_type: str) -> dict:
@@ -108,6 +129,8 @@ def routable_tools(rules: dict, principal: dict) -> list[str]:
         spec = TOOLS.get(name)
         if spec is None or spec["destructive"]:
             continue
+        if not role_allows(rules, principal, name):
+            continue
         out.append(name)
     return out
 
@@ -118,6 +141,8 @@ def visible_tools(rules: dict, principal: dict) -> list[str]:
     for name in chat_conf(rules, principal).get("tools", []):
         spec = TOOLS.get(name)
         if spec is None or spec["destructive"]:
+            continue
+        if not role_allows(rules, principal, name):
             continue
         if spec["personal"] and not principal["personal_data"]:
             continue
@@ -140,6 +165,8 @@ def decide(rules: dict, principal: dict, tool: str) -> str:
         raise Denied("policy_invalid", f"{tool} is private but not personal")
     if not in_chat and not in_private:
         raise Denied("tool_not_in_chat", f"{tool} is not enabled for {principal['chat_type']}")
+    if not role_allows(rules, principal, tool):
+        raise Denied("tool_not_in_role", f"role {principal.get('role')} may not use {tool}")
     if spec["personal"] and not principal["personal_data"]:
         # Personal answer in a group: compute it, never post it here.
         return "call_and_deliver_privately"

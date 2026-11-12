@@ -1,6 +1,7 @@
 """Policy tests. These run without a model key and without network access."""
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -358,3 +359,37 @@ class GatewayTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class RoleTests(unittest.TestCase):
+    """`role` was parsed and ignored, so "guest" had owner powers. A role may only narrow."""
+
+    def setUp(self) -> None:
+        self.rules = policy.load_rules(ROOT / "config" / "policy.json")
+
+    def _rules_with_roles(self) -> dict:
+        rules = copy.deepcopy(self.rules)
+        rules["roles"] = {"intern": {"tools": ["docs_search"]}}
+        rules["users"]["4004"] = {"name": "Intern", "role": "intern", "workspace": "x"}
+        return rules
+
+    def test_a_role_narrows_the_chat_allowlist(self) -> None:
+        rules = self._rules_with_roles()
+        principal = policy.resolve(rules, "4004", "dm")
+        visible = policy.visible_tools(rules, principal)
+        self.assertEqual(visible, ["docs_search"])
+        with self.assertRaises(policy.Denied) as ctx:
+            policy.decide(rules, principal, "salary_self")
+        self.assertEqual(ctx.exception.code, "tool_not_in_role")
+
+    def test_an_undefined_role_fails_the_load(self) -> None:
+        rules = copy.deepcopy(self.rules)
+        rules["users"]["5005"] = {"name": "Ghost", "role": "nobody", "workspace": "x"}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(rules, fh)
+        try:
+            with self.assertRaises(policy.Denied) as ctx:
+                policy.load_rules(fh.name)
+            self.assertEqual(ctx.exception.code, "policy_invalid")
+        finally:
+            Path(fh.name).unlink()

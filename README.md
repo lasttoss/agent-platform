@@ -13,8 +13,8 @@ extraction code, no mail client and no provider SDK. Adding a capability means s
 service, not adding a branch.
 
 **Status: research notes, not production software.** Written to understand the problem and to be
-explained out loud; no support, no SLA, no deployment story. 90 tests: Go gateway 22, Python
-reference gateway 42, OCR 21, model service 5. Everything that identifies a real person or a real
+explained out loud; no support, no SLA, no deployment story. 91 tests: Go gateway 22, Python
+reference gateway 43, OCR 21, model service 5. Everything that identifies a real person or a real
 amount lives outside git, in `config/local.json`.
 
 ## Layout
@@ -37,7 +37,7 @@ HTTP/MCP only.
 ## Run
 
 ```bash
-make test              # 90 tests, no network, no keys
+make test              # 91 tests, no network, no keys
 make run-mcp-demo      # 127.0.0.1:8091  demo tools (MCP)
 make run-ocr           # 127.0.0.1:8099  OCR service (MCP) + REST for the queue
 make run-model         # 127.0.0.1:8097  model service (MCP, mock until MODEL_BASE_URL is set)
@@ -252,11 +252,36 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 90 tests: 22 gateway-go, 42 Python reference gateway, 21 ocr, 5 model service
+make test     # 91 tests: 22 gateway-go, 43 Python reference gateway, 21 ocr, 5 model service
 make parity   # starts both gateways + the MCP services, diffs the decisions: 10/10 equal
 ```
 CI runs the same command on every push (`.github/workflows/test.yml`); the only system dependency
 is poppler for the PDF text layer, and the OCR fixtures are generated, never committed.
+
+## Measured, and what it does not prove
+
+`scripts/bench.py` sends the same request to both gateways: 32 concurrent clients, 640 requests
+each, on this laptop. Cache warm, no model attached.
+
+```
+gateway        rps    p50     p95     p99     max    errors
+go            6298    4.2     7.6     9.7    11.8         0
+python          68  463.6   698.1   928.4  1504.7         0
+```
+
+At one client the same request costs **0.2 ms** on Go and **12.3 ms** on Python. That single
+number explains most of the table: the Python reference commits to sqlite on every request (a
+durable cache), the Go gateway keeps an in-memory map behind a mutex. The rest is the global lock
+that makes the shared sqlite connection safe.
+
+**What this does not prove.** Nothing about Go versus Python as languages, and nothing about
+event loops: both gateways are non-blocking at the socket layer. It measures two designs, one of
+which pays fsync per request. It is also why the Go cache is documented as in-memory — that is a
+trade (no cache after restart) made to keep the request path free of durability.
+
+The measurement did find one real bug: sharing one `sqlite3` connection across request threads
+without a lock dropped 381 of 640 connections with `InterfaceError: bad parameter or other API
+misuse`. `CacheStore` now serialises its connection; the Python gateway answers 640/640 too.
 
 ## The MCP boundary
 

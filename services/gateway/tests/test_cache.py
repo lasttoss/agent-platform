@@ -76,3 +76,40 @@ class CacheTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class CacheThreadSafetyTest(unittest.TestCase):
+    """One sqlite connection, many request threads: without the lock in CacheStore this raised
+    sqlite3.InterfaceError and the server dropped the connection. Concurrency bugs are cheap to
+    reproduce and expensive to find in production, so the reproduction lives here."""
+
+    def test_many_threads_never_corrupt_the_shared_connection(self) -> None:
+        import threading
+
+        from gateway.cache import CacheStore
+
+        store = CacheStore(":memory:")
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def worker(n: int) -> None:
+            try:
+                for i in range(n):
+                    store.put_exact(f"k{i}", "answer", ["t"], 0, 60, "user:1")
+                    store.get_exact(f"k{i}")
+                    store.get_semantic("tài liệu runbook", "user:1")
+                    store.bump("queries")
+            except BaseException as exc:  # noqa: BLE001 — the point is to capture it
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(20,)) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        self.assertEqual(errors, [], f"{len(errors)} thread(s) hit the shared connection")
+        # and the store is still usable afterwards: no silent corruption
+        self.assertIsNotNone(store.get_exact("k0"))
+        self.assertIsInstance(store.stats(), dict)

@@ -20,7 +20,9 @@ import hashlib
 import json
 import math
 import re
+import functools
 import sqlite3
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -83,9 +85,24 @@ def cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
+def _serialised(fn):
+    """Serialise access to the shared sqlite connection: correctness first, throughput second."""
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class CacheStore:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
+        # One connection shared by every request thread. sqlite3 with check_same_thread=False
+        # is not thread-safe on its own: without this lock, 32 concurrent clients produced
+        # "InterfaceError: bad parameter or other API misuse" and dropped connections.
+        self._lock = threading.RLock()
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.executescript(
             """
@@ -105,6 +122,7 @@ class CacheStore:
         self.db.commit()
 
     # ---------- L1 ----------
+    @_serialised
     def get_exact(self, key: str) -> dict | None:
         row = self.db.execute(
             "SELECT answer, tokens_saved, created_at, ttl_s, scope FROM exact WHERE k=?", (key,)
@@ -123,6 +141,7 @@ class CacheStore:
         self.bump("l1_hit")
         return {"layer": "exact", "answer": answer, "saved_tokens": saved, "scope": scope}
 
+    @_serialised
     def put_exact(self, key: str, answer: str, tools: list[str], tokens: int, ttl_s: int, scope: str) -> None:
         if ttl_s == 0:            # category opted out of caching
             return
@@ -133,6 +152,7 @@ class CacheStore:
         self.db.commit()
 
     # ---------- L2 ----------
+    @_serialised
     def get_semantic(self, text: str, scope: str, threshold: float = SEMANTIC_THRESHOLD) -> dict | None:
         vec = embed(text)
         best, best_sim = None, 0.0
@@ -154,6 +174,7 @@ class CacheStore:
         self.bump("l2_miss")
         return None
 
+    @_serialised
     def put_semantic(self, text: str, answer: str, tokens: int, ttl_s: int, scope: str) -> None:
         if ttl_s == 0:
             return
@@ -164,11 +185,13 @@ class CacheStore:
         self.db.commit()
 
     # ---------- stats ----------
+    @_serialised
     def bump(self, name: str, by: int = 1) -> None:
         self.db.execute("INSERT INTO stats(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = v + ?",
                         (name, by, by))
         self.db.commit()
 
+    @_serialised
     def stats(self) -> dict:
         rows = dict(self.db.execute("SELECT k, v FROM stats").fetchall())
         l1 = rows.get("l1_hit", 0)

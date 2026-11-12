@@ -315,7 +315,12 @@ def make_server(policy_path: str | None = None, port: int = 8088,
     tools.load_salary_overrides(local.get("salary"))
     Handler.rules = rules
     Handler.consent = consent
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    # Default backlog is 5; 32 concurrent clients is more than that. The connection resets I
+    # first blamed on this were actually the shared sqlite connection (see gateway/cache.py),
+    # but a listen queue of 5 is still the wrong default for a gateway.
+    srv.request_queue_size = 128
+    return srv
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ the data and the algorithm, or in the language?** `scripts/parity.py` starts bot
 sends the same ten requests and diffs the answers field by field.
 
 ```
-go test ./...            # 15 tests, no network, no keys
+go test ./...            # 14 tests, no network, no keys
 python3 scripts/parity.py   # 10/10 identical against the Python gateway
 ```
 

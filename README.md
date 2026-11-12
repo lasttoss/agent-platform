@@ -240,7 +240,7 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 72 tests: 42 gateway/cache/adapter, 15 ocr (incl. the job queue), 15 gateway-go
+make test     # 71 tests: 42 gateway/cache/adapter, 15 ocr (incl. the job queue), 14 gateway-go
 make parity   # starts both gateways, sends the same 10 requests, diffs the decisions: 10/10 equal
 ```
 CI runs the same command on every push (`.github/workflows/test.yml`); the only system dependency

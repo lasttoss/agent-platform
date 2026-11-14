@@ -91,6 +91,10 @@ and then through a ClickHouse user that may only read. See `services/clickhouse/
 `nlp_ask` needs a model: point the model service at any OpenAI-compatible endpoint (the guard and
 the read-only database user stay in the path whoever the provider is).
 
+A real agent harness is the honest test of "MCP all the way down": `deploy/dsh/dsh-platform.patch.yml`
+composes dsh with the gateway as its only tool server, and `docs/dsh-client.md` records what that
+run proved, including the two failures it exposed.
+
 ```
 MODEL_BASE_URL=https://api.commandcode.ai/provider/v1 MODEL_NAME=deepseek/deepseek-v4.1-flash \
 MODEL_API_KEY=… docker compose -f deploy/compose/docker-compose.yml up -d model-mcp

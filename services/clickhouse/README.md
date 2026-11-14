@@ -52,13 +52,12 @@ When the model service is unconfigured it answers with empty content and this re
 ### Measured against a real model
 
 ```
-MODEL_BASE_URL=https://api.commandcode.ai/provider/v1 \
-MODEL_NAME=deepseek/deepseek-v4.1-flash \
+MODEL_BASE_URL=https://api.openai.com/v1 MODEL_NAME=gpt-4.1-mini \
 MODEL_API_KEY=… docker compose -f deploy/compose/docker-compose.yml up -d model-mcp
 ```
 
-Then, through the gateway (`nlp_ask`, owner token), a real DeepSeek V4.1 Flash behind the real
-`model-mcp` and a real ClickHouse:
+Then, through the gateway (`nlp_ask`, owner token), a real model behind the real `model-mcp` and a
+real ClickHouse:
 
 ```
 Q: Sự kiện nào xuất hiện nhiều nhất và trung bình mất bao nhiêu ms?

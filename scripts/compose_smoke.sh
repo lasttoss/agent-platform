@@ -30,6 +30,20 @@ expect() { # expect <label> <expected substring> <actual>
 say "building and starting"
 "${COMPOSE[@]}" up -d --build >/tmp/compose-up.log 2>&1 || { tail -20 /tmp/compose-up.log; exit 1; }
 
+# Quota is shared state: a suite that asserts on answers must start with a fresh allowance, or a
+# second run today fails on "daily quota reached" and looks like a broken gateway.
+say "clearing today's usage counters"
+for _ in $(seq 1 30); do
+  if "${COMPOSE[@]}" exec -T postgres psql -U postgres -d agent -c 'DELETE FROM usage_counters' >/dev/null 2>&1; then
+    # The gateway also holds counters in memory, so clearing the table alone leaves a process that
+    # still believes today is spent. Restart it: the run then starts from a known zero.
+    "${COMPOSE[@]}" restart gateway >/dev/null 2>&1
+    ok "usage counters cleared (gateway restarted to drop its in-memory copy)"
+    break
+  fi
+  sleep 2
+done
+
 say "waiting for the gateway"
 for _ in $(seq 1 60); do
   curl -sf "$GW/health" >/dev/null 2>&1 && break

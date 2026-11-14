@@ -96,7 +96,7 @@ composes dsh with the gateway as its only tool server, and `docs/dsh-client.md` 
 run proved, including the two failures it exposed.
 
 ```
-MODEL_BASE_URL=https://api.commandcode.ai/provider/v1 MODEL_NAME=deepseek/deepseek-v4.1-flash \
+MODEL_BASE_URL=https://api.openai.com/v1 MODEL_NAME=gpt-4.1-mini \
 MODEL_API_KEY=… docker compose -f deploy/compose/docker-compose.yml up -d model-mcp
 
 docker compose -f deploy/compose/docker-compose.yml up -d --build clickhouse clickhouse-mcp

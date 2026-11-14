@@ -64,31 +64,34 @@ What it prints, and why each number matters:
 
 ## Put any OpenAI-compatible model behind dsh
 
-dsh ships DeepSeek-first, but a custom provider is a profile patch, not a fork. This ran against
-a relay that serves `deepseek-v4.1-flash` over OpenAI Chat Completions:
+dsh ships DeepSeek-first, but a custom provider is a profile patch, not a fork. The route is named
+`openai-compatible` and every endpoint fact comes from the environment, so the same file serves
+OpenAI itself, a corporate gateway, or a relay:
 
 ```yaml
 # $DSH_HOME/profiles/headless/cordis.patch.yml
 - id: llm-pi-ai
   config:
     providers:
-      commandcode:
-        apiKeyEnv: COMMANDCODE_API_KEY     # keep the secret in the environment, not the file
+      openai-compatible:
+        apiKeyEnv: OPENAI_API_KEY           # the secret stays in the environment
         api: openai-completions
-        baseURL: https://api.commandcode.ai/provider/v1
+        baseURL: !!js 'process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"'
         models:
-          - id: deepseek/deepseek-v4.1-flash
+          - id: !!js 'process.env.OPENAI_MODEL || "gpt-4.1-mini"'
 
 - id: agent-default-model
   config:
-    provider: commandcode
-    model: deepseek/deepseek-v4.1-flash
+    provider: openai-compatible
+    model: !!js 'process.env.OPENAI_MODEL || "gpt-4.1-mini"'
 ```
 
 The shipped default route is `deepseek-official`; without the second patch dsh stops with
 `MISSING_CREDENTIAL: no API key for provider route "deepseek-official"` even when the relay key
 is exported. A provider speaks one protocol, so a relay serving both OpenAI- and
-Anthropic-shaped models needs one provider entry per protocol.
+Anthropic-shaped models needs one provider entry per protocol. Keep the row id `llm-pi-ai`: a
+second pi-ai instance under another id fails at load with *configurable provider
+"amazon-bedrock" is already declared*.
 
 ## End-to-end, with the real harness
 

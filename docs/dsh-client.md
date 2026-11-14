@@ -11,7 +11,9 @@ exactly as the gateway intends — filtered by the caller's role before the mode
 # token: the KEY in config/dsh-tokens.json ("dsh-demo-owner-token" → user 1001).
 # Not the value "1001": that is the user id, and passing it yields a 401.
 export PLATFORM_TOKEN=dsh-demo-owner-token
-export COMMANDCODE_KEY=...            # any OpenAI-compatible key; the adapter reads it per request
+export OPENAI_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint
+export OPENAI_API_KEY=...                          # read per request, never from a file
+export OPENAI_MODEL=gpt-4.1-mini                   # a model that endpoint serves
 
 dsh --profile headless --patch deploy/dsh/dsh-platform.patch.yml \
   "Gọi tool mcp__platform__nlp_ask với câu hỏi: 'Có bao nhiêu người chơi đến từ Việt Nam?'"
@@ -20,11 +22,13 @@ dsh --profile headless --patch deploy/dsh/dsh-platform.patch.yml \
 ## What the overlay says, and why
 
 - **`llm-pi-ai` inserted, `llm-deepseek` disabled.** The DeepSeek adapter speaks the official
-  DeepSeek wire format and it does not fit this endpoint: pointed at
-  `https://api.commandcode.ai/provider/v1` it posts to a route the provider does not serve
-  (`404`), and at `/provider/v1/chat/completions` it reports *"DeepSeek Messages request failed"*.
-  pi-ai is the generic adapter — a route with `api: openai-completions` and a model list is
-  configuration, not code.
+  DeepSeek wire format and does not fit an OpenAI-shaped endpoint: it posts to a route such a
+  provider does not serve, and appending the chat path moves the failure one hop deeper instead of
+  fixing it. pi-ai is the generic adapter — a route with `api: openai-completions` and a model list
+  is configuration, not code.
+  The inserted row keeps the id **`llm-pi-ai`**: a second pi-ai instance under a different id fails
+  at load with *configurable provider "amazon-bedrock" is already declared*, which reads like a
+  catalog problem and is really "two adapters, one registry".
 - **`agent-default-model` points at the new route.** The headless runner creates one agent and
   reads its selection from this service, so a route nobody selects is a route nobody uses.
 - **`mcp-platform`** points at the gateway, `streamable-http`, `Authorization: Bearer`, and

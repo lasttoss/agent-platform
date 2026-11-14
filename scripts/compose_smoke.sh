@@ -93,7 +93,7 @@ say "a role change from the console applies to the next MCP call"
 ADMIN=dsh-demo-owner-token; DEV=dsh-demo-dev-token
 mcp_call() { # mcp_call <token> <tool> — wiki_search exists in this stack and guest lacks it
   curl -s -X POST "$UI/mcp" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":{\"query\":\"smoke\"}}}"
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":{\"q\":\"smoke\"}}}"
 }
 before=$(mcp_call "$DEV" wiki_search)
 case "$before" in *'"result"'*) ok "dev may use wiki_search before the change" ;; *) bad "dev was already denied: $before" ;; esac
@@ -108,6 +108,14 @@ curl -s -o /dev/null -X POST "$UI/admin/users/2002/role" -H "Authorization: Bear
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$UI/admin/users/2002/role" \
   -H "Authorization: Bearer $DEV" -H 'Content-Type: application/json' -d '{"role":"owner"}')
 expect "a non-admin cannot assign roles" "403" "$code"
+
+say "operational surface: metrics, validation, per-tool deadlines"
+curl -sf "$GW/metrics" >/tmp/metrics.txt 2>/dev/null
+expect "Prometheus metrics are exposed" "gateway_mcp_cache_misses_total" "$(cat /tmp/metrics.txt 2>/dev/null)"
+case "$(cat /tmp/metrics.txt 2>/dev/null)" in *"1001"*) bad "metrics leak user ids" ;; *) ok "metrics carry no user ids" ;; esac
+bad_args=$(curl -s -X POST "$UI/mcp" -H "Authorization: Bearer dsh-demo-owner-token" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{"q":42}}}')
+expect "a wrong argument type is refused at the gateway" "invalid arguments" "$bad_args"
 
 say "one audit view for every gateway"
 curl -sf "http://127.0.0.1:8096/v1/report?day=$(date +%F)" > /tmp/smoke-report.json \

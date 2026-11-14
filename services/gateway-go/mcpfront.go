@@ -10,6 +10,8 @@ package main
 // an unpermitted tool something the model never learns about.
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -21,13 +23,13 @@ type MCPFront struct {
 	srv    *Server
 	tokens *tokenSet
 
-	mu         sync.Mutex
-	hits       int
-	misses     int
-	bypass     int // tool with ttl 0: never cached, so neither hit nor miss
-	coalesced  int // identical calls in flight at the same moment, answered once
-	sse        int
-	inflight   map[string]*inflightCall
+	mu          sync.Mutex
+	hits        int
+	misses      int
+	bypass      int // tool with ttl 0: never cached, so neither hit nor miss
+	coalesced   int // identical calls in flight at the same moment, answered once
+	sse         int
+	inflight    map[string]*inflightCall
 	denied      map[string]int
 	quotaDenied int
 	busyDenied  int
@@ -103,6 +105,11 @@ type mcpRequest struct {
 // Streamable HTTP permits either; a client that sends Accept: text/event-stream must not be
 // handed JSON and left to guess.
 func (f *MCPFront) emit(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	// A client that holds a session id must get it back on every reply; clients that ignore the
+	// header are unaffected. The server keeps no session state either way.
+	if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+		w.Header().Set("Mcp-Session-Id", sid)
+	}
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		raw, _ := json.Marshal(payload)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -169,7 +176,20 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(req.Params, &initParams)
 		f.srv.audit(map[string]any{"event": "mcp_initialize", "user": pal.UserID, "role": pal.Role,
 			"client": initParams.ClientInfo, "protocol": initParams.Protocol,
-			"at":     time.Now().UTC().Format(time.RFC3339)})
+			"at": time.Now().UTC().Format(time.RFC3339)})
+		// Sessions are optional in MCP over HTTP, but some clients require the header. This
+		// server keeps no session state; it answers with an id so those clients can proceed,
+		// and echoes any id the client already holds.
+		session := r.Header.Get("Mcp-Session-Id")
+		if session == "" {
+			var buf [16]byte
+			if _, err := rand.Read(buf[:]); err == nil {
+				session = hex.EncodeToString(buf[:])
+			}
+		}
+		if session != "" {
+			w.Header().Set("Mcp-Session-Id", session)
+		}
 		f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
 			"protocolVersion": "2025-06-18",
 			"serverInfo":      map[string]any{"name": "agent-gateway", "version": "0.1.0"},
@@ -223,6 +243,19 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 			"tool": params.Name, "reason": err.Error(), "at": time.Now().UTC().Format(time.RFC3339)})
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32003, "denied: "+err.Error(), nil))
 		return
+	}
+
+	// Arguments are checked here, before quota, cache or slot: a request that was never valid
+	// should not spend the caller's allowance, and it must not reach the cache keyed by garbage.
+	if _, inputSchema, ok := f.srv.Reg.MCPToolDef(params.Name); ok {
+		if err := validateArgs(inputSchema, params.Arguments); err != nil {
+			f.srv.audit(map[string]any{"event": "mcp_invalid_args", "user": pal.UserID,
+				"role": pal.Role, "tool": params.Name, "reason": err.Error(),
+				"at": time.Now().UTC().Format(time.RFC3339)})
+			f.emit(w, r, http.StatusOK,
+				rpcErr(req.ID, -32602, "invalid arguments: "+err.Error(), nil))
+			return
+		}
 	}
 
 	// The same daily quota as /v1/respond: an MCP client is another way to spend the allowance,

@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,6 +34,7 @@ func main() {
 	mcpPath := flag.String("mcp", "../../config/mcp.json", "MCP services")
 	tokensPath := flag.String("tokens", "../../config/dsh-tokens.json", "MCP client tokens (token → user id)")
 	rolesPath := flag.String("roles", "../../config/roles.json", "role assignments written by the console")
+	usagePath := flag.String("usage", "", "persist today's quota counters here, so a restart does not reset them")
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	audit := flag.String("audit", "state/audit.log", "audit log path")
 	refresh := flag.Duration("refresh", 30*time.Second,
@@ -93,6 +97,20 @@ func main() {
 		os.MkdirAll(dir, 0o755)
 	}
 	srv := NewServer(pol, consent, reg, *audit)
+	if *usagePath != "" {
+		store := newUsageStore(*usagePath)
+		loaded, err := store.load(srv)
+		if err != nil {
+			log.Printf("usage: %v (starting from zero)", err)
+		}
+		srv.usageStore = store
+		go store.run(srv, 500*time.Millisecond)
+		if loaded {
+			fmt.Printf("usage: today's counters restored from %s\n", *usagePath)
+		} else {
+			fmt.Printf("usage: %s had nothing for today\n", *usagePath)
+		}
+	}
 	roles, err := NewRoleStore(*rolesPath)
 	if err != nil {
 		log.Fatalf("roles: %v", err)
@@ -168,5 +186,27 @@ func main() {
 	if srv.AdapterToken != "" {
 		fmt.Println("adapter token required on /v1/respond and /v1/whoami")
 	}
-	log.Fatal(http.ListenAndServe(*addr, srv.Routes()))
+	httpSrv := &http.Server{Addr: *addr, Handler: srv.Routes(),
+		ReadHeaderTimeout: 10 * time.Second}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+	<-ctx.Done()
+	// Graceful: stop accepting, let in-flight calls finish, then write the counters. A deploy
+	// that kills a running tool and forgets the quota it just spent is two bugs in one.
+	shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutCtx); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+	if srv.usageStore != nil {
+		if err := srv.usageStore.save(srv); err != nil {
+			log.Printf("usage: %v", err)
+		}
+	}
+	fmt.Println("gateway stopped cleanly")
 }

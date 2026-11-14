@@ -79,6 +79,16 @@ curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
 | Workers hold no authority and no platform credentials | `services/ocr/` | one worker bug widens authority for everyone |
 | Personal and third-party data leave the chat: DM only, aggregate in groups | `policy.json` + `server.py` | a salary or a candidate CV lands in a group |
 
+## Operating it
+
+`docs/operations.md` covers the five things beyond "answers correctly": argument validation before
+any work, per-tool deadlines, counters that survive a restart, `/metrics` with no user ids in it,
+and a shutdown that finishes in-flight calls. The short version:
+
+```bash
+curl -s 127.0.0.1:8090/metrics | grep gateway_mcp_cache_misses_total
+```
+
 ## What is deliberately not here yet
 
 - Real mail/Drive/Jira MCP servers. `config/providers.json` describes the shape (auth type,

@@ -7,7 +7,8 @@
   "docs_search": {
     "description": "Search internal documents.",
     "max_in_flight": 8,
-    "ttl": 3600
+    "ttl": 3600,
+    "timeout_s": 15
   },
   "drive_search": {
     "description": "Search the caller's own Drive.",
@@ -34,14 +35,16 @@
     "max_in_flight": 4,
     "personal": true,
     "provider": "local_ocr",
-    "ttl": 0
+    "ttl": 0,
+    "timeout_s": 300
   },
   "ocr_result": {
     "description": "Read the result of a submitted extraction job.",
     "max_in_flight": 16,
     "personal": true,
     "provider": "local_ocr",
-    "ttl": 0
+    "ttl": 0,
+    "timeout_s": 30
   },
   "salary_self": {
     "description": "Return the salary record of the caller.",

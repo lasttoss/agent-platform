@@ -58,6 +58,9 @@ type Server struct {
 	// Identity arrives as a bearer token in the transport, never as a tool argument.
 	MCP *MCPFront
 
+	// usageStore persists today's counters so a restart does not hand out a second allowance.
+	usageStore *usageStore
+
 	// Roles is the console's answer to "who is a dev today", layered over policy.json. Nil
 	// means the policy file alone decides, which is the behaviour of every earlier version.
 	Roles *roleStore
@@ -83,6 +86,10 @@ type Server struct {
 	auditQ       chan []byte
 	auditDropped atomic.Int64
 }
+
+var startedAt = time.Now()
+
+func uptimeSeconds() float64 { return time.Since(startedAt).Seconds() }
 
 func NewServer(p *Policy, consent map[string]map[string][]string, reg *Registry, auditPath string) *Server {
 	return &Server{Policy: p, Consent: consent, Reg: reg, Cache: NewCache(), Audit: auditPath,
@@ -175,20 +182,28 @@ func (s *Server) audit(rec map[string]any) {
 // model service was attached — a bug parity found at 300 generated cases, not at 10.
 func (s *Server) chargeRequest(userID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.usage[userID] == nil {
 		s.usage[userID] = map[string]int{}
 	}
 	s.usage[userID]["requests"]++
+	store := s.usageStore
+	s.mu.Unlock()
+	if store != nil {
+		store.mark()
+	}
 }
 
 func (s *Server) chargeTokens(userID string, tokens int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.usage[userID] == nil {
 		s.usage[userID] = map[string]int{}
 	}
 	s.usage[userID]["tokens"] += tokens
+	store := s.usageStore
+	s.mu.Unlock()
+	if store != nil {
+		store.mark()
+	}
 }
 
 func (s *Server) overQuota(userID string) bool {
@@ -644,6 +659,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/admin/users", s.adminUsers)
 	mux.HandleFunc("/admin/users/", s.adminSetRole)
 	mux.HandleFunc("/admin/roles", s.adminRoles)
+	mux.HandleFunc("/metrics", s.metrics)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})

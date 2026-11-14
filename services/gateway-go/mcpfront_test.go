@@ -49,6 +49,14 @@ func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, re
 			{Name: "echo", Description: "echo back", InputSchema: map[string]any{"type": "object"}},
 			{Name: "personal_echo", Description: "personal", InputSchema: map[string]any{"type": "object"}},
 			{Name: "write_thing", Description: "a write", InputSchema: map[string]any{"type": "object"}},
+			{Name: "strict", Description: "needs a string q", InputSchema: map[string]any{
+				"type":     "object",
+				"required": []any{"q"},
+				"properties": map[string]any{
+					"q": map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			}},
 		},
 		Call: func(name string, args map[string]any, r *http.Request) (any, error) {
 			if upstreamCalls != nil {
@@ -76,17 +84,18 @@ func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, re
       "users": {"1001": {"name":"Owner","role":"owner","workspace":"d"},
                 "2002": {"name":"Dev","role":"dev","workspace":"d"},
                 "3003": {"name":"Dev2","role":"dev","workspace":"d"}},
-      "roles": {"owner": {"tools":["*"],"admin":true}, "dev": {"tools":["echo","personal_echo"]}},
-      "chats": {"dm": {"tools":["echo","personal_echo","write_thing"], "personal_data": true, "free_chat": true}},
+      "roles": {"owner": {"tools":["*"],"admin":true}, "dev": {"tools":["echo","personal_echo","strict"]}},
+      "chats": {"dm": {"tools":["echo","personal_echo","write_thing","strict"], "personal_data": true, "free_chat": true}},
       "quota": {"requests_per_day": %d, "tokens_per_day": 100000}
     }`, requestsPerDay))
 	consentPath := write("consent.json", `{}`)
 	metaPath := write("tools.json", fmt.Sprintf(`{
       "echo": {"description":"echo","ttl":600,"max_in_flight":%d},
       "personal_echo": {"description":"personal","personal":true,"ttl":600},
-      "write_thing": {"description":"write","ttl":0}
+      "write_thing": {"description":"write","ttl":0},
+      "strict": {"description":"strict","ttl":0}
     }`, maxInFlight))
-	mcpPath := write("mcp.json", fmt.Sprintf(`{"servers":[{"name":"up","url":%q,"tools":["echo","personal_echo","write_thing"]}]}`, upstream.URL+"/mcp"))
+	mcpPath := write("mcp.json", fmt.Sprintf(`{"servers":[{"name":"up","url":%q,"tools":["echo","personal_echo","write_thing","strict"]}]}`, upstream.URL+"/mcp"))
 	tokensPath := write("tokens.json", `{"tokens":{"tok-owner":"1001","tok-dev":"2002","tok-dev-2":"3003"}}`)
 
 	pol, err := LoadPolicy(policyPath)
@@ -173,10 +182,10 @@ func TestMCPFrontAuth(t *testing.T) {
 func TestMCPFrontFiltersByRole(t *testing.T) {
 	base, _, _ := testGateway(t)
 	owner, dev := listTools(t, base, "tok-owner"), listTools(t, base, "tok-dev")
-	if len(owner) != 3 {
+	if len(owner) != 4 || !contains(owner, "write_thing") {
 		t.Fatalf("owner sees %v", owner)
 	}
-	if len(dev) != 2 || contains(dev, "write_thing") {
+	if len(dev) != 3 || contains(dev, "write_thing") {
 		t.Fatalf("dev must not see write_thing: %v", dev)
 	}
 }
@@ -544,5 +553,142 @@ func TestAdminRoleChangeRetiresCachedAnswers(t *testing.T) {
 	after := stats()
 	if after["misses"] <= before["misses"] {
 		t.Fatalf("generation bump must invalidate the cache: before=%v after=%v", before, after)
+	}
+}
+
+func TestRejectsInvalidArgumentsBeforeAnyWork(t *testing.T) {
+	var calls int32
+	base, _, auditPath := testGatewayWithCounter(t, &calls)
+	cases := []string{
+		`{"q":1}`,         // wrong type
+		`{}`,              // missing required
+		`{"q":"a","x":2}`, // additionalProperties: false
+	}
+	for _, args := range cases {
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"strict","arguments":` + args + `}}`
+		code, resp := call(t, base, "tok-owner", body, "")
+		if code != 200 || !strings.Contains(resp, "invalid arguments") {
+			t.Fatalf("args %s must be refused: %d %s", args, code, resp)
+		}
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatalf("invalid arguments must not reach the service, got %d calls", calls)
+	}
+	if _, resp := call(t, base, "tok-owner",
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"strict","arguments":{"q":"ok"}}}`, ""); !strings.Contains(resp, "result") {
+		t.Fatalf("valid arguments must pass: %s", resp)
+	}
+	raw, _ := os.ReadFile(auditPath)
+	if !strings.Contains(string(raw), "mcp_invalid_args") {
+		t.Fatal("refusing an invalid call must be audited")
+	}
+}
+
+func TestPerToolTimeout(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}],"isError":false}}`))
+	}))
+	defer slow.Close()
+	meta := map[string]ToolMeta{"slow": {Description: "slow", TimeoutS: 0.05}}
+	reg := NewRegistry(meta, []ServerConf{{Name: "slow", URL: slow.URL, Tools: []string{"slow"}}})
+	if errs := reg.Discover(); len(errs) > 0 {
+		t.Fatalf("discover: %v", errs)
+	}
+	started := time.Now()
+	if _, err := reg.CallTool("slow", map[string]any{}, "t"); err == nil {
+		t.Fatal("a tool slower than its deadline must fail")
+	}
+	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+		t.Fatalf("timeout did not cut the call short: %v", elapsed)
+	}
+}
+
+func TestUsageSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.json")
+	os.WriteFile(policyPath, []byte(`{
+      "allow_unknown_users": false,
+      "users": {"1001": {"name":"Owner","role":"owner","workspace":"d"}},
+      "roles": {"owner": {"tools":["*"]}},
+      "chats": {"dm": {"tools":["echo"], "free_chat": true}},
+      "quota": {"requests_per_day": 3, "tokens_per_day": 1000}
+    }`), 0o600)
+	pol, err := LoadPolicy(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := NewServer(pol, nil, nil, filepath.Join(dir, "audit.log"))
+	store := newUsageStore(filepath.Join(dir, "usage.json"))
+	first.usageStore = store
+	for i := 0; i < 3; i++ {
+		first.chargeRequest("1001")
+	}
+	if !first.overQuota("1001") {
+		t.Fatal("three of three must be spent")
+	}
+	if err := store.save(first); err != nil {
+		t.Fatal(err)
+	}
+	second := NewServer(pol, nil, nil, filepath.Join(dir, "audit.log"))
+	loaded, err := newUsageStore(filepath.Join(dir, "usage.json")).load(second)
+	if err != nil || !loaded {
+		t.Fatalf("load: %v loaded=%v", err, loaded)
+	}
+	if !second.overQuota("1001") {
+		t.Fatal("a restart must not hand out a second allowance")
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	withRoleStore(t, map[string]string{"1001": "owner"})
+	base, _, _ := testGateway(t)
+	call(t, base, "tok-owner",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"q":"m"}}}`, "")
+	resp, err := http.Get(base + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	page := string(raw)
+	for _, want := range []string{"gateway_mcp_cache_misses_total", "gateway_roles_generation",
+		`gateway_mcp_tool_calls_total{tool="echo"}`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("metrics missing %q", want)
+		}
+	}
+	if strings.Contains(page, "1001") {
+		t.Fatal("metrics must not expose user ids")
+	}
+}
+
+func TestInitializeReturnsSessionID(t *testing.T) {
+	base, _, _ := testGateway(t)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"t","version":"0"}}}`
+	req, _ := http.NewRequest("POST", base+"/mcp", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok-owner")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+	if session == "" {
+		t.Fatal("initialize should answer with a session id for clients that require one")
+	}
+	req2, _ := http.NewRequest("POST", base+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"ping"}`))
+	req2.Header.Set("Authorization", "Bearer tok-owner")
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Mcp-Session-Id", session)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if got := resp2.Header.Get("Mcp-Session-Id"); got != session {
+		t.Fatalf("a session id the client holds must be echoed, got %q", got)
 	}
 }

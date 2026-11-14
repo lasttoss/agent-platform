@@ -33,6 +33,10 @@ type ToolMeta struct {
 	Scope       string `json:"scope"`
 	TTL         int    `json:"ttl"`           // seconds; 0 = never cache
 	MaxInFlight int    `json:"max_in_flight"` // 0 = unlimited (see README: that is a choice)
+	// TimeoutS is how long this tool may take. A build or an import needs minutes; a search
+	// needs seconds, and one global timeout is either too short for the first or too long for
+	// the second. 0 keeps the historical 60s.
+	TimeoutS float64 `json:"timeout_s"`
 	Description string `json:"description"`
 }
 
@@ -93,6 +97,15 @@ func (c *Client) rpc(method string, params any) (json.RawMessage, error) {
 // rpcAs is the same call, plus who is on whose behalf. The gateway has already resolved the
 // principal; the service trusts this header only because it is reachable only from the gateway.
 func (c *Client) rpcAs(method string, params any, caller string) (json.RawMessage, error) {
+	return c.rpcAsTimeout(method, params, caller, 60*time.Second)
+}
+
+// rpcAsTimeout is rpcAs with the tool's own deadline: a search gets seconds, an import gets
+// minutes, and one global timeout would be wrong for one of them.
+func (c *Client) rpcAsTimeout(method string, params any, caller string, timeout time.Duration) (json.RawMessage, error) {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	c.mu.Lock()
 	c.id++
 	id := c.id
@@ -111,7 +124,7 @@ func (c *Client) rpcAs(method string, params any, caller string) (json.RawMessag
 	if caller != "" {
 		req.Header.Set("X-Caller-Id", caller)
 	}
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
@@ -146,7 +159,12 @@ func (c *Client) ListTools() ([]MCPTool, error) {
 // Call returns the tool's JSON object. MCP wraps results in a content list; this repo's
 // services put one JSON document in a single text block, so there is one shape to parse.
 func (c *Client) Call(name string, args map[string]any, caller string) (map[string]any, error) {
-	raw, err := c.rpcAs("tools/call", map[string]any{"name": name, "arguments": args}, caller)
+	return c.CallTimeout(name, args, caller, 60*time.Second)
+}
+
+// CallTimeout is Call with a deadline chosen per tool (see ToolMeta.TimeoutS).
+func (c *Client) CallTimeout(name string, args map[string]any, caller string, timeout time.Duration) (map[string]any, error) {
+	raw, err := c.rpcAsTimeout("tools/call", map[string]any{"name": name, "arguments": args}, caller, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -373,11 +391,16 @@ func (r *Registry) Schema(tool string) map[string]any {
 func (r *Registry) CallTool(tool string, args map[string]any, caller string) (map[string]any, error) {
 	r.mu.RLock()
 	srv, ok := r.byTool[tool]
+	meta := r.Meta[tool]
 	r.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("no server advertises " + tool)
 	}
-	return srv.Client.Call(tool, args, caller)
+	timeout := 60 * time.Second
+	if meta.TimeoutS > 0 {
+		timeout = time.Duration(meta.TimeoutS * float64(time.Second))
+	}
+	return srv.Client.CallTimeout(tool, args, caller, timeout)
 }
 
 // Complete asks the model service — an MCP server, not a hardcoded provider — to choose a tool.

@@ -149,6 +149,7 @@ services:
       - -audit=/state/audit.jsonl
       - -tokens=/tokens.json
       - -roles=/roles/roles.json
+      - -usage=/state/usage.json
       - -refresh=30s
     environment:
       AUDIT_SINK_URL: http://audit-sink:8096/v1/audit

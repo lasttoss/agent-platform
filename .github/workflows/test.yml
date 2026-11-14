@@ -63,3 +63,47 @@ jobs:
 
       - name: The compose file still parses
         run: docker compose -f deploy/compose/docker-compose.yml config -q
+
+  # The UI test runs against the container stack, not a mock: nginx, the gateway, the role store
+  # and the MCP front all have to agree for it to pass. It is slower than the unit jobs, and that
+  # is the point.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the platform
+        run: docker compose -f deploy/compose/docker-compose.yml up -d --build
+
+      - name: Wait for the console
+        run: |
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8088/health && break
+            sleep 3
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/console/package-lock.json
+
+      - name: Install
+        working-directory: services/console
+        run: npm ci --no-audit --no-fund
+
+      - name: Browser
+        working-directory: services/console
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end
+        working-directory: services/console
+        run: npx playwright test
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f deploy/compose/docker-compose.yml logs --tail 80
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yml down -v

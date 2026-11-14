@@ -104,9 +104,29 @@ echo -n "  token mới → "; curl -s -o /dev/null -w 'HTTP %{http_code}\n' -H "
   -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":22,"method":"tools/list"}' "$URL"
 cp "$STATE/tokens.bak" config/dsh-tokens.json
 
-echo; echo "── 9. audit (dòng thật, do gateway ghi) ─────────────────────────"
-grep -E 'mcp_tokens_rotated|mcp_denied|mcp_quota_denied|mcp_busy' "$STATE/audit.log" | tail -n 6
+echo; echo "── 9. console: đổi role, có hiệu lực NGAY ───────────────────────"
+echo -n "  dev gọi jira_create_issue trước: "
+rpc "$DEV" '{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"jira_create_issue","arguments":{"summary":"x"}}}' | head -c 120; echo
+ADMIN=$(curl -sS -H "Authorization: Bearer $OWNER" http://127.0.0.1:8090/admin/users)
+echo "  /admin/users: $(echo "$ADMIN" | head -c 150) …"
+echo -n "  POST role 2002 → owner: "
+curl -sS -X POST -H "Authorization: Bearer $OWNER" -H 'Content-Type: application/json' \
+  -d '{"role":"owner"}' http://127.0.0.1:8090/admin/users/2002/role; echo
+echo -n "  dev gọi jira_create_issue sau:  "
+rpc "$DEV" '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"jira_create_issue","arguments":{"summary":"y"}}}' | head -c 120; echo
+echo -n "  dev tự đổi role của mình:       "
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' -X POST -H "Authorization: Bearer $DEV" -H 'Content-Type: application/json' \
+  -d '{"role":"owner"}' http://127.0.0.1:8090/admin/users/2002/role
+python3 -c "
+import json
+d=json.load(open('config/roles.json'))
+d['roles']['2002']='dev'
+json.dump(d,open('config/roles.json','w'),indent=2,ensure_ascii=False)
+open('config/roles.json','a').write(chr(10))"
 
-echo; echo "── 10. stats cuối ──────────────────────────────────────────────"
+echo; echo "── 10. audit (dòng thật, do gateway ghi) ────────────────────────"
+grep -E 'mcp_tokens_rotated|mcp_denied|mcp_quota_denied|mcp_busy|admin_role_change|admin_denied' "$STATE/audit.log" | tail -n 6
+
+echo; echo "── 11. stats cuối ──────────────────────────────────────────────"
 stats
 echo "state: $STATE"

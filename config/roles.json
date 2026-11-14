@@ -1,0 +1,7 @@
+{
+  "//": "Role assignments written by the admin console. policy.json defines what a role may do; this file says who has which role. Delete an entry to fall back to the policy file.",
+  "roles": {
+    "1001": "owner",
+    "2002": "dev"
+  }
+}

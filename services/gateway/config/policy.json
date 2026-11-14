@@ -21,7 +21,8 @@
     "owner": {
       "tools": [
         "*"
-      ]
+      ],
+      "admin": true
     },
     "dev": {
       "tools": [

@@ -58,6 +58,10 @@ type Server struct {
 	// Identity arrives as a bearer token in the transport, never as a tool argument.
 	MCP *MCPFront
 
+	// Roles is the console's answer to "who is a dev today", layered over policy.json. Nil
+	// means the policy file alone decides, which is the behaviour of every earlier version.
+	Roles *roleStore
+
 	mu    sync.Mutex
 	usage map[string]map[string]int // userID → {"requests", "tokens"}
 	sems  map[string]chan struct{}  // tool → in-flight slots (see acquire)
@@ -636,6 +640,10 @@ func (s *Server) directoryState(userID string) map[string]any {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	// The console backend: login happens elsewhere, role assignment happens here.
+	mux.HandleFunc("/admin/users", s.adminUsers)
+	mux.HandleFunc("/admin/users/", s.adminSetRole)
+	mux.HandleFunc("/admin/roles", s.adminRoles)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})

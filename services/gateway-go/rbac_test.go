@@ -159,7 +159,10 @@ func TestWhoamiEndpoint(t *testing.T) {
 		t.Fatal("owner in a dm should see tools")
 	}
 
-	resp2, _ := http.Get(srv.URL + "/v1/whoami?user=9999&chat=dm")
+	resp2, err := http.Get(srv.URL + "/v1/whoami?user=9999&chat=dm")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusForbidden {
 		t.Fatalf("unknown user should be 403, got %d", resp2.StatusCode)

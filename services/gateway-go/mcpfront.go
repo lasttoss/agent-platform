@@ -85,6 +85,10 @@ func (f *MCPFront) whoami(r *http.Request) (Principal, bool) {
 	if err != nil {
 		return Principal{}, false
 	}
+	// The console outranks the file: a role assigned there applies to the next request.
+	if role, ok := f.srv.effectiveRole(userID); ok {
+		pal.Role = role
+	}
 	return pal, true
 }
 
@@ -239,7 +243,10 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	if meta.Personal {
 		scope = "user:" + pal.UserID
 	}
-	key := hashKey(map[string]any{"tool": params.Name, "args": params.Arguments, "scope": scope})
+	key := hashKey(map[string]any{"tool": params.Name, "args": params.Arguments, "scope": scope,
+		// A role assignment must be visible immediately; the generation in the key retires
+		// every entry cached under the old permissions without walking the cache.
+		"gen": f.srv.policyGeneration()})
 	cacheable := meta.TTL > 0
 	if cacheable {
 		if e, hit := f.srv.Cache.GetExact(key); hit {

@@ -19,6 +19,10 @@ import (
 
 // testGateway builds a gateway whose upstream is a real MCP server over HTTP, so the test
 // exercises the same path as production: token → policy → registry → upstream.
+// testRoleStore lets a test hand the shared fixture a role store; nil in every test that does
+// not care about the console.
+var testRoleStore func(t *testing.T, dir string) *roleStore
+
 func testGateway(t *testing.T) (string, string, string) {
 	t.Helper()
 	return testGatewayOpts(t, nil, 0, 1000, 0)
@@ -72,7 +76,7 @@ func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, re
       "users": {"1001": {"name":"Owner","role":"owner","workspace":"d"},
                 "2002": {"name":"Dev","role":"dev","workspace":"d"},
                 "3003": {"name":"Dev2","role":"dev","workspace":"d"}},
-      "roles": {"owner": {"tools":["*"]}, "dev": {"tools":["echo","personal_echo"]}},
+      "roles": {"owner": {"tools":["*"],"admin":true}, "dev": {"tools":["echo","personal_echo"]}},
       "chats": {"dm": {"tools":["echo","personal_echo","write_thing"], "personal_data": true, "free_chat": true}},
       "quota": {"requests_per_day": %d, "tokens_per_day": 100000}
     }`, requestsPerDay))
@@ -106,6 +110,9 @@ func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, re
 		t.Fatalf("discover: %v", errs)
 	}
 	srv := NewServer(pol, consent, reg, filepath.Join(dir, "audit.log"))
+	if testRoleStore != nil {
+		srv.Roles = testRoleStore(t, dir)
+	}
 	ts, err := NewTokenSet(tokensPath)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +211,10 @@ func TestMCPFrontCache(t *testing.T) {
 	}
 	// A write is never cached, so it is counted as bypass, not as a miss.
 	call(t, base, "tok-owner", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"write_thing","arguments":{}}}`, "")
-	resp2, _ := http.Get(base + "/stats/mcp")
+	resp2, err := http.Get(base + "/stats/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp2.Body.Close()
 	var st2 map[string]any
 	json.NewDecoder(resp2.Body).Decode(&st2)
@@ -218,7 +228,10 @@ func TestMCPFrontPersonalCacheIsPerUser(t *testing.T) {
 	body := `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"personal_echo","arguments":{"q":"same"}}}`
 	call(t, base, "tok-dev", body, "")
 	call(t, base, "tok-dev-2", body, "") // same role, different person
-	resp, _ := http.Get(base + "/stats/mcp")
+	resp, err := http.Get(base + "/stats/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	var st map[string]any
 	json.NewDecoder(resp.Body).Decode(&st)
@@ -286,7 +299,10 @@ func TestMCPFrontConcurrentUsers(t *testing.T) {
 	for e := range errs {
 		t.Fatal(e)
 	}
-	resp, _ := http.Get(base + "/stats/mcp")
+	resp, err := http.Get(base + "/stats/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	var st map[string]any
 	json.NewDecoder(resp.Body).Decode(&st)
@@ -316,7 +332,10 @@ func TestMCPFrontCoalescesIdenticalInFlightCalls(t *testing.T) {
 	if got := atomic.LoadInt32(&upstreamCalls); got != 1 {
 		t.Fatalf("20 identical concurrent calls must reach the service once, got %d", got)
 	}
-	resp, _ := http.Get(base + "/stats/mcp")
+	resp, err := http.Get(base + "/stats/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	var st map[string]any
 	json.NewDecoder(resp.Body).Decode(&st)
@@ -375,11 +394,155 @@ func TestMCPFrontRejectsWhenToolSaturated(t *testing.T) {
 	if okCount != 2 || busyCount != 4 {
 		t.Fatalf("want 2 served and 4 refused at a ceiling of 2, got ok=%d busy=%d", okCount, busyCount)
 	}
-	resp, _ := http.Get(base + "/stats/mcp")
+	resp, err := http.Get(base + "/stats/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	var st map[string]any
 	json.NewDecoder(resp.Body).Decode(&st)
 	if st["busy_denied"].(float64) != 4 {
 		t.Fatalf("busy_denied: %v", st["busy_denied"])
+	}
+}
+
+func callAdmin(t *testing.T, base, token, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	var rdr io.Reader
+	if body != "" {
+		rdr = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, base+path, rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func withRoleStore(t *testing.T, roles map[string]string) {
+	t.Helper()
+	testRoleStore = func(t *testing.T, dir string) *roleStore {
+		raw, _ := json.Marshal(map[string]any{"roles": roles})
+		p := filepath.Join(dir, "roles.json")
+		if err := os.WriteFile(p, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rs, err := NewRoleStore(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rs
+	}
+	t.Cleanup(func() { testRoleStore = nil })
+}
+
+func TestAdminOnlyForAdminRoles(t *testing.T) {
+	base, _, _ := testGateway(t)
+	if code, _ := callAdmin(t, base, "tok-dev", "GET", "/admin/users", ""); code != 403 {
+		t.Fatalf("dev must not read the admin list, got %d", code)
+	}
+	code, out := callAdmin(t, base, "tok-owner", "GET", "/admin/users", "")
+	if code != 200 {
+		t.Fatalf("owner should read the list: %d %v", code, out)
+	}
+	users, _ := out["users"].([]any)
+	if len(users) != 3 {
+		t.Fatalf("want 3 subjects, got %v", out["users"])
+	}
+	if code, _ := callAdmin(t, base, "tok-owner", "GET", "/admin/roles", ""); code != 200 {
+		t.Fatalf("roles list: %d", code)
+	}
+	if code, _ := callAdmin(t, base, "nope", "GET", "/admin/users", ""); code != 401 {
+		t.Fatalf("unknown token must be 401, got %d", code)
+	}
+}
+
+func TestAdminRoleChangeAppliesToNextRequestAndAudits(t *testing.T) {
+	withRoleStore(t, map[string]string{"1001": "owner", "2002": "dev", "3003": "dev"})
+	base, _, auditPath := testGateway(t)
+
+	// Before: dev cannot write.
+	if _, resp := call(t, base, "tok-dev",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_thing","arguments":{"q":"x"}}}`, ""); !strings.Contains(resp, "denied") {
+		t.Fatalf("dev should be denied before the change: %s", resp)
+	}
+	code, out := callAdmin(t, base, "tok-owner", "POST", "/admin/users/2002/role", `{"role":"owner"}`)
+	if code != 200 || out["to"] != "owner" {
+		t.Fatalf("assign: %d %v", code, out)
+	}
+	// After: same token, next request is allowed. No restart, no re-login.
+	if _, resp := call(t, base, "tok-dev",
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write_thing","arguments":{"q":"y"}}}`, ""); strings.Contains(resp, "denied") {
+		t.Fatalf("change must apply to the next request: %s", resp)
+	}
+	raw, _ := os.ReadFile(auditPath)
+	if !strings.Contains(string(raw), "admin_role_change") || !strings.Contains(string(raw), "\"to\":\"owner\"") {
+		t.Fatalf("role change must be audited: %s", raw)
+	}
+}
+
+func TestAdminGuards(t *testing.T) {
+	withRoleStore(t, map[string]string{"1001": "owner", "2002": "dev", "3003": "dev"})
+	base, _, _ := testGateway(t)
+
+	if code, out := callAdmin(t, base, "tok-owner", "POST", "/admin/users/1001/role", `{"role":"dev"}`); code != 409 {
+		t.Fatalf("self-demotion must be refused, got %d %v", code, out)
+	}
+	if code, _ := callAdmin(t, base, "tok-owner", "POST", "/admin/users/2002/role", `{"role":"wizard"}`); code != 400 {
+		t.Fatalf("unknown role must be 400, got %d", code)
+	}
+	if code, _ := callAdmin(t, base, "tok-owner", "POST", "/admin/users/9999/role", `{"role":"dev"}`); code != 404 {
+		t.Fatalf("unknown subject must be 404, got %d", code)
+	}
+	if code, _ := callAdmin(t, base, "tok-dev", "POST", "/admin/users/3003/role", `{"role":"owner"}`); code != 403 {
+		t.Fatalf("non-admin must not assign roles, got %d", code)
+	}
+}
+
+// The generation is what retires cached answers after a permission change. Two different
+// mechanisms are checked here: a role change alters the cache scope, and a re-assignment that
+// keeps the same role still bumps the generation, so an entry cached under the old permissions
+// cannot be served again.
+func TestAdminRoleChangeRetiresCachedAnswers(t *testing.T) {
+	withRoleStore(t, map[string]string{"1001": "owner", "2002": "dev"})
+	base, _, _ := testGateway(t)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"q":"same"}}}`
+	call(t, base, "tok-dev-2", body, "") // 3003 is dev via policy, no store entry
+	_, first := call(t, base, "tok-dev-2", body, "")
+	if !strings.Contains(first, "result") {
+		t.Fatalf("second call should have been served: %s", first)
+	}
+	stats := func() map[string]float64 {
+		resp, err := http.Get(base + "/stats/mcp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		json.NewDecoder(resp.Body).Decode(&m)
+		return map[string]float64{"hits": m["cache_hits"].(float64), "misses": m["cache_misses"].(float64)}
+	}
+	before := stats()
+	if before["hits"] < 1 {
+		t.Fatalf("expected a cache hit before the change: %v", before)
+	}
+	// Re-assign the same role to a different user: the generation moves, so the next identical
+	// call must miss instead of reusing an answer cached under the old permissions.
+	if code, out := callAdmin(t, base, "tok-owner", "POST", "/admin/users/2002/role", `{"role":"dev"}`); code != 200 {
+		t.Fatalf("assign: %d %v", code, out)
+	}
+	call(t, base, "tok-dev-2", body, "")
+	after := stats()
+	if after["misses"] <= before["misses"] {
+		t.Fatalf("generation bump must invalidate the cache: before=%v after=%v", before, after)
 	}
 }

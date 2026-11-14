@@ -144,6 +144,9 @@ Coalescing is what makes the cache useful under load: without it, twenty request
 together all miss the empty cache and all reach the service, and the cache only helps the
 twenty-first. The three counters add up to the calls that arrived — `hits + misses + coalesced`.
 
+Role assignment from a console (login stays the company's business) is described in
+[admin-console.md](admin-console.md).
+
 ## Limits (measured, not assumed)
 
 - dsh is `0.2.2-rc.1` and its README says compatibility-breaking changes are coming. The plugin

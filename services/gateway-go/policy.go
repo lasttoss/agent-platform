@@ -34,6 +34,9 @@ type ChatConf struct {
 // only narrow the chat allowlist, never widen it — widening is how a role becomes a backdoor.
 type RoleConf struct {
 	Tools []string `json:"tools"`
+	// Admin marks a role that may assign roles from the console. It is separate from Tools on
+	// purpose: seeing every tool is not the same as being allowed to hand out permissions.
+	Admin bool `json:"admin"`
 }
 
 type Quota struct {

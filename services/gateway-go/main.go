@@ -30,6 +30,7 @@ func main() {
 	toolsPath := flag.String("tools", "../../config/tools.json", "tool policy metadata")
 	mcpPath := flag.String("mcp", "../../config/mcp.json", "MCP services")
 	tokensPath := flag.String("tokens", "../../config/dsh-tokens.json", "MCP client tokens (token → user id)")
+	rolesPath := flag.String("roles", "../../config/roles.json", "role assignments written by the console")
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	audit := flag.String("audit", "state/audit.log", "audit log path")
 	refresh := flag.Duration("refresh", 30*time.Second,
@@ -49,6 +50,7 @@ func main() {
 	*toolsPath = firstExisting(*toolsPath, "config/tools.json")
 	*mcpPath = firstExisting(*mcpPath, "config/mcp.json")
 	*tokensPath = firstExisting(*tokensPath, "config/dsh-tokens.json")
+	*rolesPath = firstExisting(*rolesPath, "config/roles.json")
 
 	pol, err := LoadPolicy(*policyPath)
 	if err != nil {
@@ -91,6 +93,13 @@ func main() {
 		os.MkdirAll(dir, 0o755)
 	}
 	srv := NewServer(pol, consent, reg, *audit)
+	roles, err := NewRoleStore(*rolesPath)
+	if err != nil {
+		log.Fatalf("roles: %v", err)
+	}
+	srv.Roles = roles
+	fmt.Printf("roles: %d assignment(s) from %s — /admin/* needs a role with admin:true\n",
+		len(roles.Snapshot()), *rolesPath)
 	if err := srv.RefreshDirectory(reg); err != nil {
 		log.Printf("user directory unavailable (%v) — policy.json decides who may act", err)
 	} else {

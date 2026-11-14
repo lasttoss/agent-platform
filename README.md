@@ -28,6 +28,7 @@ services/userdir/     who exists, and whether they may act             (MCP, Pos
 services/audit-sink/  one audit view for several gateways               (HTTP, SQLite)
 services/model-mcp/   the model as a service: "which tool fits this sentence" (MCP, no tool access)
 services/mcp-ts-example/  a tool service in TypeScript: the boundary is the protocol (MCP)
+services/console/     the operator console (Vite + React); nginx serves it and proxies the API
 services/gateway/     Python REFERENCE gateway + Telegram adapter (parity oracle, not the deployment)
 config/               policy.json, consent.json, tools.json, mcp.json  (the contract)
 scripts/parity.py     starts both gateways + services, diffs 10 decisions
@@ -48,6 +49,15 @@ make run-ocr           # 127.0.0.1:8099  OCR service (MCP) + REST for the queue
 make run-model         # 127.0.0.1:8097  model service (MCP, mock until MODEL_BASE_URL is set)
 make run-gateway-go    # 127.0.0.1:8090  the gateway
 make parity            # both gateways, same 10 requests, decisions diffed
+```
+
+The whole platform in containers — gateway, four MCP services, Postgres, the audit sink and the
+console:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up --build
+open http://127.0.0.1:8088       # console: paste a token whose role has admin: true
+bash scripts/compose_smoke.sh    # or let the script assert every claim below
 ```
 
 End-to-end, with a real file — the gateway resolves the caller, calls one MCP tool, and the OCR

@@ -24,14 +24,20 @@ means a permission change is not a deploy, and a deploy is not a permission chan
 
 ## Page
 
-`GET /admin/console` serves one static HTML file (embedded in the binary): a token field, the
-list of people with a role selector, and the roles with their tools. It fetches the three
-endpoints below and keeps the token in `sessionStorage`, so the file itself carries no data and
-no session — an unauthenticated GET reveals nothing.
+The console is a Vite + React app in `services/console`, built into static files and served by
+nginx next to the gateway. nginx also proxies `/admin`, `/stats`, `/health`, `/v1` and `/mcp` to
+the gateway, so the browser talks to one origin and there is no CORS rule to relax.
 
 ```bash
-open http://127.0.0.1:8090/admin/console     # paste a token whose role has admin: true
+docker compose -f deploy/compose/docker-compose.yml up --build
+open http://127.0.0.1:8088                 # paste a token whose role has admin: true
+
+cd services/console && GATEWAY_URL=http://127.0.0.1:8090 npm run dev   # UI on :5173, proxied
 ```
+
+The token lives in `sessionStorage`; the page holds no data of its own, so an unauthenticated
+GET of the static files reveals nothing. The gateway itself serves only the JSON API — one UI,
+in the place where a UI belongs, rather than a second copy embedded in a Go binary.
 
 Measured in a browser at 430 px wide: load → change a role → the row updates, the generation
 moves, and the previous holder of that token is refused on the next MCP request.

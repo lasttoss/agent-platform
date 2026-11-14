@@ -39,3 +39,27 @@ jobs:
 
       - name: Parity — the same policy, two implementations
         run: make parity
+
+  # The console is a second build system in the same repository, so it gets its own job: a
+  # broken TypeScript build must fail the pull request, not the first deploy.
+  console:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/console/package-lock.json
+
+      - name: Install
+        working-directory: services/console
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check and build
+        working-directory: services/console
+        run: npm run build
+
+      - name: The compose file still parses
+        run: docker compose -f deploy/compose/docker-compose.yml config -q

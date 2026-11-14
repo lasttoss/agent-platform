@@ -147,6 +147,8 @@ services:
       - -tools=/config/tools.json
       - -mcp=/config/mcp.json
       - -audit=/state/audit.jsonl
+      - -tokens=/tokens.json
+      - -roles=/roles/roles.json
       - -refresh=30s
     environment:
       AUDIT_SINK_URL: http://audit-sink:8096/v1/audit
@@ -158,7 +160,12 @@ services:
       # copies of an authorization table is a drift bug waiting to be shipped.
       - ../../services/gateway/config:/repo-config:ro
       - ./config:/config:ro
+      # Kept out of /config on purpose: that mount is read-only, and a file inside it cannot be
+      # mounted separately. Rotation in the container happens by editing this file on the host.
+      - ../../config/dsh-tokens.json:/tokens.json:ro
       - gatewaystate:/state
+      # The console writes role assignments here; a deploy copy of policy.json stays untouched.
+      - rolestate:/roles
     depends_on:
       mcp-demo:
         condition: service_healthy
@@ -172,7 +179,23 @@ services:
         condition: service_healthy
     ports: ["8090:8090"]
 
+  console:
+    build:
+      context: ../..
+      dockerfile: services/console/Dockerfile
+    depends_on:
+      gateway:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # 8088 on the host: 8080 is commonly taken by something else on a developer machine.
+    ports: ["8088:80"]
+
 volumes:
+  rolestate:
   pgdata:
   auditdb:
   ocrstate:

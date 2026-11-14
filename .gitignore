@@ -17,3 +17,7 @@ services/ocr/samples/*
 __pycache__/
 *.pyc
 .deps/
+
+# console build output and dependencies: npm ci reproduces them
+services/console/node_modules/
+services/console/dist/

@@ -1,7 +1,6 @@
 package main
 
 import (
-	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,9 +11,6 @@ import (
 	"strings"
 	"time"
 )
-
-//go:embed admin.html
-var adminConsoleHTML string
 
 // The gateway keeps three things: who may call, what has been called, and what answer can be
 // reused. Everything a caller can actually *do* is an MCP service — including the model.

@@ -1,0 +1,61 @@
+:root {
+  --paper: #f5f5f5;
+  --ink: #2d3142;
+  --muted: #4f5d75;
+  --soft: #7a8399;
+  --accent: #eb6c36;
+  --rule: #bfc0c0;
+  --ok: #2f7d4f;
+  --bad: #b3423a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 20px 16px 48px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 13px/1.5 Inter, "Liberation Sans", system-ui, sans-serif;
+}
+header, main { max-width: 860px; margin: 0 auto; }
+header { margin-bottom: 20px; }
+h1 { font-size: 17px; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; }
+.sub { color: var(--soft); font-size: 12px; margin: 0; }
+main { display: grid; gap: 20px; }
+section { background: #fff; border: 1px solid var(--rule); border-radius: 6px; }
+.sec-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--rule);
+}
+h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.note { color: var(--soft); font-size: 11px; }
+form.token { display: flex; gap: 8px; padding: 12px 14px; flex-wrap: wrap; }
+input, select, button {
+  font: inherit; color: var(--ink); background: #fff;
+  border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px;
+}
+input { flex: 1 1 220px; min-width: 0; }
+button { cursor: pointer; background: var(--ink); color: #fff; border-color: var(--ink); }
+button:hover { background: #3b405a; }
+button.ghost { background: #fff; color: var(--ink); border-color: var(--rule); }
+ul.users, ul.roles { list-style: none; margin: 0; padding: 0; }
+li.user {
+  display: grid; grid-template-columns: 1fr auto; gap: 8px 10px;
+  padding: 12px 14px; border-top: 1px solid #e6e6e6; align-items: center;
+}
+li.user:first-child, li.role:first-child { border-top: 0; }
+.who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.name { font-weight: 600; }
+.meta { color: var(--soft); font-size: 11px; overflow-wrap: anywhere; }
+.controls { display: flex; gap: 6px; align-items: center; }
+.gen { font-variant-numeric: tabular-nums; color: var(--muted); }
+li.role { padding: 10px 14px; border-top: 1px solid #e6e6e6; }
+.role-name { font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+.tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--accent); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px;
+}
+.tools { color: var(--muted); font-size: 11.5px; margin-top: 3px; overflow-wrap: anywhere; }
+.empty { padding: 14px; color: var(--soft); margin: 0; }
+.status { min-height: 20px; font-size: 12px; margin: 0; }
+.status.ok { color: var(--ok); }
+.status.bad { color: var(--bad); }

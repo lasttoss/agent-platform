@@ -39,20 +39,6 @@ func (s *Server) adminGuard(w http.ResponseWriter, r *http.Request) (Principal, 
 	return pal, true
 }
 
-// adminConsole serves the page itself. It carries no data and holds no session: the token lives
-// in the tab, so an unauthenticated GET of this file reveals nothing.
-func (s *Server) adminConsole(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAdmin(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET only"})
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
-	w.Write([]byte(adminConsoleHTML))
-}
-
 func writeAdmin(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

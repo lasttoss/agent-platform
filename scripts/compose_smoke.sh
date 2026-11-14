@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 
 COMPOSE=(docker compose -f deploy/compose/docker-compose.yml)
 GW=http://127.0.0.1:8090
+UI=http://127.0.0.1:8088
 fail=0
 
 say()  { printf '\n== %s\n' "$*"; }
@@ -39,11 +40,16 @@ seed 1001 true  >/dev/null && seed 2002 false >/dev/null && seed 3003 true >/dev
 expect "seed reported the postgres store" '"store": "postgres"' "$(seed 1001 true)"
 
 say "waiting for the 30s directory refresh to reach the gateway"
-for _ in $(seq 1 20); do
-  src=$(curl -s "$GW/v1/whoami?user=1001&chat=dm" | python3 -c "import json,sys;print(json.load(sys.stdin).get('directory',{}).get('source',''))" 2>/dev/null)
-  [ "$src" = "userdir" ] && break
+# The gateway loads the directory at boot, which is before this script seeds it. Waiting for
+# "source: userdir" alone used to pass immediately with zero users loaded, and every later check
+# then failed for the wrong reason. Wait for the fact that matters: this person is known and active.
+for _ in $(seq 1 30); do
+  flags=$(curl -s "$GW/v1/whoami?user=1001&chat=dm" | python3 -c "import json,sys;j=json.load(sys.stdin).get('directory',{});print(f\"{j.get('known')}/{j.get('active')}\")" 2>/dev/null)
+  [ "$flags" = "True/True" ] && break
   sleep 3
 done
+expect "the gateway knows and activates 1001" "True/True" "$flags"
+src=$(curl -s "$GW/v1/whoami?user=1001&chat=dm" | python3 -c "import json,sys;print(json.load(sys.stdin).get('directory',{}).get('source',''))" 2>/dev/null)
 expect "directory source is the service, not policy.json" "userdir" "$src"
 
 post() { # post <user> <chat> <text> → http code, body in /tmp/smoke.json
@@ -76,6 +82,32 @@ if docker cp services/ocr/samples/text.pdf "$("${COMPOSE[@]}" ps -q ocr)":/app/s
 else
   printf '  skip OCR sample not available (run make samples first)\n'
 fi
+
+say "the console container serves the UI and proxies the API"
+curl -sf "$UI/" >/tmp/console.html 2>/dev/null
+expect "console app is served" "Agent platform" "$(cat /tmp/console.html 2>/dev/null)"
+curl -sf "$UI/health" >/dev/null 2>&1 && ok "nginx proxies /health to the gateway" \
+  || bad "nginx proxy for /health is missing"
+
+say "a role change from the console applies to the next MCP call"
+ADMIN=dsh-demo-owner-token; DEV=dsh-demo-dev-token
+mcp_call() { # mcp_call <token> <tool> — wiki_search exists in this stack and guest lacks it
+  curl -s -X POST "$UI/mcp" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":{\"query\":\"smoke\"}}}"
+}
+before=$(mcp_call "$DEV" wiki_search)
+case "$before" in *'"result"'*) ok "dev may use wiki_search before the change" ;; *) bad "dev was already denied: $before" ;; esac
+code=$(curl -s -o /tmp/role.json -w '%{http_code}' -X POST "$UI/admin/users/2002/role" \
+  -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"role":"guest"}')
+expect "the console API accepted the change" "200" "$code"
+after=$(mcp_call "$DEV" wiki_search)
+case "$after" in *tool_not_in_role*) ok "the demoted token is refused on the next call" ;;
+  *) bad "demotion did not take effect: $after" ;; esac
+curl -s -o /dev/null -X POST "$UI/admin/users/2002/role" -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"role":"dev"}'
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$UI/admin/users/2002/role" \
+  -H "Authorization: Bearer $DEV" -H 'Content-Type: application/json' -d '{"role":"owner"}')
+expect "a non-admin cannot assign roles" "403" "$code"
 
 say "one audit view for every gateway"
 curl -sf "http://127.0.0.1:8096/v1/report?day=$(date +%F)" > /tmp/smoke-report.json \

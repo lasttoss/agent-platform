@@ -4,3 +4,4 @@
 **/*.db
 **/samples/*.pdf
 **/node_modules
+**/dist

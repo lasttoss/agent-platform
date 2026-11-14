@@ -546,29 +546,3 @@ func TestAdminRoleChangeRetiresCachedAnswers(t *testing.T) {
 		t.Fatalf("generation bump must invalidate the cache: before=%v after=%v", before, after)
 	}
 }
-
-func TestAdminConsoleServesPageWithoutData(t *testing.T) {
-	base, _, _ := testGateway(t)
-	resp, err := http.Get(base + "/admin/console")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
-		t.Fatalf("console: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	page := string(raw)
-	for _, want := range []string{"Role console", "/admin/users", "/admin/roles"} {
-		if !strings.Contains(page, want) {
-			t.Fatalf("page is missing %q", want)
-		}
-	}
-	// The page must not carry credentials or user rows: it is one static file for everybody.
-	if strings.Contains(page, "tok-owner") || strings.Contains(page, "1001") {
-		t.Fatal("console page must not embed tokens or user data")
-	}
-	if code, _ := callAdmin(t, base, "tok-owner", "POST", "/admin/console", ""); code != 405 {
-		t.Fatalf("console is read-only, got %d", code)
-	}
-}

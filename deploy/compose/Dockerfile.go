@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway . \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mcp-demo ./cmd/mcp-demo
 
 FROM alpine:3.20
-RUN adduser -D -u 10001 app && mkdir -p /state /config && chown -R app /state
+RUN adduser -D -u 10001 app && mkdir -p /state /config /roles && chown -R app /state /roles
 COPY --from=build /out/gateway /usr/local/bin/gateway
 COPY --from=build /out/mcp-demo /usr/local/bin/mcp-demo
 USER app

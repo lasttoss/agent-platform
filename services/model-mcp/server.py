@@ -55,6 +55,11 @@ def complete(args: dict) -> dict:
     req = urllib.request.Request(f"{base}/chat/completions",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json",
+                                          # A default urllib User-Agent is refused by at least
+                                          # one provider's edge (403, measured), so this service
+                                          # names itself. A client that hides what it is gets
+                                          # blocked by something that is trying to be helpful.
+                                          "User-Agent": "agent-platform-model/1.0",
                                           "Authorization": f"Bearer {os.environ.get('MODEL_API_KEY', '')}"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         parsed = json.loads(resp.read().decode())

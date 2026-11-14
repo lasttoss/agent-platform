@@ -8,6 +8,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 COMPOSE=(docker compose -f deploy/compose/docker-compose.yml)
+# This suite asserts on answers, so it runs with the model service mocked on purpose: a live
+# provider rewords a free-chat answer and the assertions turn into a test of the provider. The
+# live path has its own script (scripts/check_nlp_live.sh) that says what it proves.
+export MODEL_BASE_URL="" MODEL_NAME="" MODEL_API_KEY=""
 GW=http://127.0.0.1:8090
 # The demo tokens from config/dsh-tokens.json; they are demo values, stated as such in the file.
 OWNER_TOKEN=dsh-demo-owner-token

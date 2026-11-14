@@ -3,7 +3,7 @@ PY := python3
 .PHONY: test samples test-gateway test-ocr test-model test-userdir test-clickhouse test-audit test-go parity \
 	run-gateway run-gateway-go run-ts-example run-mcp-demo run-model run-ocr run-userdir \
 	run-audit-sink
-	run-clickhouse run-adapter demo-adapter check-users compose-up compose-down compose-logs compose-smoke
+	run-clickhouse check-nlp-live run-adapter demo-adapter check-users compose-up compose-down compose-logs compose-smoke
 
 test: samples test-gateway test-ocr test-model test-userdir test-clickhouse test-audit test-go
 
@@ -89,6 +89,9 @@ compose-up:
 
 compose-down:
 	docker compose -f deploy/compose/docker-compose.yml down -v
+
+check-nlp-live:
+	@bash scripts/check_nlp_live.sh
 
 compose-smoke:
 	bash scripts/compose_smoke.sh

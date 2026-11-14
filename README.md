@@ -86,7 +86,13 @@ SELECT, owner only) and `nlp_ask` (a question in words → one SELECT from the m
 checked → run, with the SQL returned next to the rows). Every query travels through `sqlguard.py`
 and then through a ClickHouse user that may only read. See `services/clickhouse/README.md`.
 
+`nlp_ask` needs a model: point the model service at any OpenAI-compatible endpoint (the guard and
+the read-only database user stay in the path whoever the provider is).
+
 ```
+MODEL_BASE_URL=https://api.commandcode.ai/provider/v1 MODEL_NAME=deepseek/deepseek-v4.1-flash \
+MODEL_API_KEY=… docker compose -f deploy/compose/docker-compose.yml up -d model-mcp
+
 docker compose -f deploy/compose/docker-compose.yml up -d --build clickhouse clickhouse-mcp
 curl -s localhost:8090/mcp -H 'Authorization: Bearer dsh-demo-owner-token' -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ch_query","arguments":{"sql":"SELECT event, count() AS n FROM events GROUP BY event"}}}'

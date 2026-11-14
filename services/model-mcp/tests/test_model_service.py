@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import unittest
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -37,6 +39,35 @@ class ModelServiceTests(unittest.TestCase):
         out = server.complete({"user": "tài liệu runbook", "tools": []})
         self.assertEqual(out["tool_calls"][0]["name"], "docs_search")
         self.assertIsInstance(out["tool_calls"][0]["arguments"], dict)
+
+    def test_the_request_names_itself(self) -> None:
+        """A provider refused the default urllib User-Agent with 403 (measured), so the service
+        must send its own name — a client that hides what it is gets blocked."""
+        seen = {}
+
+        class Stub(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen["ua"] = self.headers.get("User-Agent", "")
+                raw = json.dumps({"choices": [{"message": {"content": "hi"}}],
+                                  "usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, *a):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            os.environ["MODEL_BASE_URL"] = f"http://127.0.0.1:{httpd.server_address[1]}"
+            out = server.complete({"user": "hello"})
+            self.assertFalse(out["mock"])
+            self.assertIn("agent-platform", seen["ua"])
+        finally:
+            httpd.shutdown()
+            os.environ.pop("MODEL_BASE_URL", None)
 
     def test_unknown_method_is_an_error_not_an_empty_result(self) -> None:
         body = server.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/subscribe"})

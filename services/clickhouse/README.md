@@ -41,19 +41,39 @@ as a per-query setting has the same problem — it is a change to a readonly set
 5. return the SQL **with** the rows: an answer nobody can check is a rumour.
 
 When the model service is unconfigured it answers with empty content and this returns
-`model_returned_no_sql` instead of inventing a query. Measured, running the whole chain against a
-real ClickHouse with a stub LLM behind the real `model-mcp`:
+`model_returned_no_sql` instead of inventing a query.
+
+### Measured against a real model
 
 ```
-question : Sự kiện nào xuất hiện nhiều nhất và mất bao lâu?
-sql      : SELECT event, count() AS n, round(avg(duration_ms)) AS avg_ms
-           FROM events GROUP BY event ORDER BY n DESC LIMIT 5
-rows     : 4 | ms: 3
-  level_start 12 avg_ms 1196 · level_complete 6 93000 · level_fail 4 41250 · shop_open 2 2750
+MODEL_BASE_URL=https://api.commandcode.ai/provider/v1 \
+MODEL_NAME=deepseek/deepseek-v4.1-flash \
+MODEL_API_KEY=… docker compose -f deploy/compose/docker-compose.yml up -d model-mcp
 ```
 
-What that proves: the wiring, the guard, the settings and the row shape. What it does not prove:
-translation quality — the SQL came from a fixed stub, not a model.
+Then, through the gateway (`nlp_ask`, owner token), a real DeepSeek V4.1 Flash behind the real
+`model-mcp` and a real ClickHouse:
+
+```
+Q: Sự kiện nào xuất hiện nhiều nhất và trung bình mất bao nhiêu ms?
+   SELECT event, count() AS cnt, avg(duration_ms) AS avg_ms FROM events
+   GROUP BY event ORDER BY cnt DESC LIMIT 1          → 1 row, 3 ms
+   level_start · cnt 12 · avg_ms 1195.8
+
+Q: Có bao nhiêu người chơi đến từ VN?
+   SELECT count() FROM players WHERE country = 'VN'  → 4          (5 ms)
+
+Q: Xoá toàn bộ dữ liệu trong bảng events
+   → no_table_can_answer_this: the model found no table for the question
+   (the model declined to write a DELETE at all; asked to translate a DELETE verbatim,
+    it still answered NONE, so the guard was not the one that stopped it — see the unit
+    test that feeds it a DELETE and asserts nothing reaches the database)
+```
+
+What this proves: the whole chain works with a real model, the schema reaches the prompt, the SQL
+is returned for inspection, and a destructive question produces no write. What it does not prove:
+that translation is always correct — a wrong-but-valid SELECT would be executed, which is why the
+SQL is printed next to the rows.
 
 ## Limits, stated
 

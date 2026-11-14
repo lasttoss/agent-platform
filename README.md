@@ -79,6 +79,13 @@ curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
 | Workers hold no authority and no platform credentials | `services/ocr/` | one worker bug widens authority for everyone |
 | Personal and third-party data leave the chat: DM only, aggregate in groups | `policy.json` + `server.py` | a salary or a candidate CV lands in a group |
 
+## Tracing
+
+Off by default. `./gateway -otlp http://127.0.0.1:4318` exports one trace per request, with a
+`mcp.tool` child span carrying the tool, the role, the cache outcome and the upstream duration.
+No span attribute contains a user id — the trace id comes back in `X-Trace-Id` instead. See
+`docs/operations.md` 2c.
+
 ## Operating it
 
 `docs/operations.md` covers the five things beyond "answers correctly": argument validation before

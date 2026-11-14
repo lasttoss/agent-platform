@@ -161,6 +161,9 @@ services:
       # Unset by default so the stack is runnable without secrets. Set it and the gateway requires
       # X-Adapter-Token on /v1/respond and /v1/whoami.
       ADAPTER_TOKEN: ${ADAPTER_TOKEN:-}
+      # Tracing stays off unless a collector URL is provided: OTLP_ENDPOINT=http://collector:4318
+      # (or the flag -otlp) turns on one trace per request. Empty means no exporter at all.
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
     volumes:
       # policy.json and consent.json are the repository's files, mounted rather than copied: two
       # copies of an authorization table is a drift bug waiting to be shipped.

@@ -90,6 +90,43 @@ cardinality grows with every employee.
 and exits with `gateway stopped cleanly`. Compose sends `SIGTERM` on `down`, so a deploy no longer
 cuts a tool call in half and forgets the quota it just spent.
 
+## 2c. A slow answer can be attributed to one service
+
+Tracing is off by default: with no `-otlp` (or `OTLP_ENDPOINT`) there is no exporter, and no span
+is recorded. Turning it on exports OTLP/HTTP to a collector:
+
+```
+./gateway -otlp http://127.0.0.1:4318
+tracing on — exporting spans to http://127.0.0.1:4318
+```
+
+One trace per request, with a child span per tool call:
+
+```
+POST /mcp                      (server span, name = method + route)
+└── mcp.tool  mcp.tool=wiki_search gateway.role=owner gateway.chat=dm
+              gateway.cache=miss|hit|coalesced|bypass  gateway.leader=true
+              gateway.upstream_ms=31  gateway.rpc_error=<code>
+```
+
+Measured on one machine: a `curl` to `/mcp` returns `X-Trace-Id:
+d069dd8e456bcb6f612e8878da780b74`, and that trace id appears **inside** the exported protobuf
+after the batch flush (666 bytes on the wire). A caller that sends `traceparent` keeps its trace:
+the reply header echoes the incoming trace id, so the adapter and the gateway are one trace, not
+two.
+
+Two rules, the same ones the metrics follow:
+
+- **No user id on a span.** A trace is exported to a third party by definition. The role and the
+  chat type are attributes; the identity comes back as `X-Trace-Id` so a user report can be joined
+  to the span without the span carrying the user.
+- **Spans are named by route**, not path: `/admin/users/1001/role` and `/admin/users/2002/role` are
+  `GET /admin/users/{id}/role` — one line in a dashboard, not one per user.
+
+Nothing traces the service side yet: the gateway injects `traceparent` into the upstream request,
+and a service that does not read it starts its own trace. The four test cases in `tracing_test.go`
+cover the gateway half, including that no attribute contains the user id.
+
 ## Parity harness notes
 
 `make parity` compares the Go gateway with the Python reference on 70 requests. Three rules keep
@@ -113,6 +150,6 @@ Latest run: `10/10 handwritten · 60/60 generated identical · 3 same-answer cac
 |---|---|---|
 | Counters are eventually-consistent (5 s) | two replicas can overspend inside the window | a database round-trip per call, or Redis `INCRBY` |
 | The bucket is per process | two replicas = two buckets per user | shared store, same shape as counters |
-| No trace/span export | metrics say "slow", not "where" | OTel + collector, ~1 day |
+| Nothing traces the MCP services | the gateway span says which tool and how long, not what the service did inside | OTel SDK in each service, ~1 day |
 | Long tools block a request | a 5-minute build must become job + poll | job store + SSE progress, ~2 days |
 | Role store has no history | audit log has it, the UI does not | read `admin_role_change` back, ~half day |

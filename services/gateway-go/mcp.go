@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +37,8 @@ type ToolMeta struct {
 	// TimeoutS is how long this tool may take. A build or an import needs minutes; a search
 	// needs seconds, and one global timeout is either too short for the first or too long for
 	// the second. 0 keeps the historical 60s.
-	TimeoutS float64 `json:"timeout_s"`
-	Description string `json:"description"`
+	TimeoutS    float64 `json:"timeout_s"`
+	Description string  `json:"description"`
 }
 
 func LoadToolsMeta(path string) (map[string]ToolMeta, error) {
@@ -103,6 +104,12 @@ func (c *Client) rpcAs(method string, params any, caller string) (json.RawMessag
 // rpcAsTimeout is rpcAs with the tool's own deadline: a search gets seconds, an import gets
 // minutes, and one global timeout would be wrong for one of them.
 func (c *Client) rpcAsTimeout(method string, params any, caller string, timeout time.Duration) (json.RawMessage, error) {
+	return c.rpcAsTimeoutCtx(context.Background(), method, params, caller, timeout)
+}
+
+// rpcAsTimeoutCtx is the same call with the caller's context: it carries the trace, so the
+// service either joins this trace or starts its own, and never silently guesses.
+func (c *Client) rpcAsTimeoutCtx(ctx context.Context, method string, params any, caller string, timeout time.Duration) (json.RawMessage, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
@@ -113,7 +120,7 @@ func (c *Client) rpcAsTimeout(method string, params any, caller string, timeout 
 
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id,
 		"method": method, "params": params})
-	req, err := http.NewRequest(http.MethodPost, c.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +131,7 @@ func (c *Client) rpcAsTimeout(method string, params any, caller string, timeout 
 	if caller != "" {
 		req.Header.Set("X-Caller-Id", caller)
 	}
+	InjectContext(ctx, req.Header)
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", method, err)
@@ -164,7 +172,16 @@ func (c *Client) Call(name string, args map[string]any, caller string) (map[stri
 
 // CallTimeout is Call with a deadline chosen per tool (see ToolMeta.TimeoutS).
 func (c *Client) CallTimeout(name string, args map[string]any, caller string, timeout time.Duration) (map[string]any, error) {
-	raw, err := c.rpcAsTimeout("tools/call", map[string]any{"name": name, "arguments": args}, caller, timeout)
+	return c.CallTimeoutCtx(context.Background(), name, args, caller, timeout)
+}
+
+// CallTimeoutCtx is CallTimeout with the caller's context, so the upstream call joins the trace.
+func (c *Client) CallTimeoutCtx(ctx context.Context, name string, args map[string]any, caller string, timeout time.Duration) (map[string]any, error) {
+	return c.callWith(ctx, name, args, caller, timeout)
+}
+
+func (c *Client) callWith(ctx context.Context, name string, args map[string]any, caller string, timeout time.Duration) (map[string]any, error) {
+	raw, err := c.rpcAsTimeoutCtx(ctx, "tools/call", map[string]any{"name": name, "arguments": args}, caller, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -389,6 +406,11 @@ func (r *Registry) Schema(tool string) map[string]any {
 }
 
 func (r *Registry) CallTool(tool string, args map[string]any, caller string) (map[string]any, error) {
+	return r.CallToolCtx(context.Background(), tool, args, caller)
+}
+
+// CallToolCtx threads the request context through so the span reaches the service.
+func (r *Registry) CallToolCtx(ctx context.Context, tool string, args map[string]any, caller string) (map[string]any, error) {
 	r.mu.RLock()
 	srv, ok := r.byTool[tool]
 	meta := r.Meta[tool]
@@ -400,7 +422,7 @@ func (r *Registry) CallTool(tool string, args map[string]any, caller string) (ma
 	if meta.TimeoutS > 0 {
 		timeout = time.Duration(meta.TimeoutS * float64(time.Second))
 	}
-	return srv.Client.CallTimeout(tool, args, caller, timeout)
+	return srv.Client.CallTimeoutCtx(ctx, tool, args, caller, timeout)
 }
 
 // Complete asks the model service — an MCP server, not a hardcoded provider — to choose a tool.

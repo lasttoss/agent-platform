@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"net/http"
 	"os"
@@ -684,6 +686,39 @@ func (s *Server) directoryState(userID string) map[string]any {
 		"known": known, "active": known && active}
 }
 
+// Traced names a span by route, not by path: /admin/users/1001/role and /admin/users/2002/role
+// are one route and one line in a dashboard, not two thousand.
+func Traced(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route := routeTemplate(r.URL.Path)
+		ctx, span := StartServerSpan(r.Context(), r, r.Method+" "+route)
+		defer span.End()
+		// A trace id in a header is how a user report joins the span without the span carrying
+		// the user's id.
+		if id := TraceID(ctx); id != "" {
+			w.Header().Set("X-Trace-Id", id)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func routeTemplate(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i, p := range parts {
+		digits := len(p) > 0
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			parts[i] = "{id}"
+		}
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	// The console backend: login happens elsewhere, role assignment happens here.
@@ -739,10 +774,13 @@ func (s *Server) Routes() http.Handler {
 			writeJSON(w, 400, map[string]any{"error": "bad_json"})
 			return
 		}
+		if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+			span.SetAttributes(attribute.String("gateway.chat", req.ChatType))
+		}
 		code, body := s.Handle(req)
 		writeJSON(w, code, body)
 	})
-	return mux
+	return Traced(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

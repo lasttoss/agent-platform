@@ -41,6 +41,8 @@ func main() {
 	audit := flag.String("audit", "state/audit.log", "audit log path")
 	refresh := flag.Duration("refresh", 30*time.Second,
 		"how often to re-probe services (health, then tools/list) and reload the user directory; 0 disables")
+	otlp := flag.String("otlp", os.Getenv("OTLP_ENDPOINT"),
+		"OTLP HTTP endpoint for traces (empty keeps tracing off; spans are then not recorded)")
 	auditHTTP := flag.String("audit-http", os.Getenv("AUDIT_SINK_URL"),
 		"optional collector URL: each audit line is also shipped there (best effort)")
 	setActive := flag.String("set-active", "",
@@ -187,6 +189,13 @@ func main() {
 			}
 		}()
 	}
+	stopTracing, err := SetupTracing(context.Background(), *otlp, "agent-gateway")
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
+	if *otlp != "" {
+		fmt.Printf("tracing on — exporting spans to %s\n", *otlp)
+	}
 	srv.StartAuditSink(*auditHTTP)
 	if *auditHTTP != "" {
 		fmt.Println("audit sink:", *auditHTTP)
@@ -229,5 +238,10 @@ func main() {
 			log.Printf("usage: %v", err)
 		}
 	}
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := stopTracing(flushCtx); err != nil {
+		log.Printf("tracing: flush: %v", err)
+	}
+	flushCancel()
 	fmt.Println("gateway stopped cleanly")
 }

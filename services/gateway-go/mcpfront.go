@@ -14,6 +14,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,6 +112,14 @@ type mcpRequest struct {
 // Streamable HTTP permits either; a client that sends Accept: text/event-stream must not be
 // handed JSON and left to guess.
 func (f *MCPFront) emit(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+		span.SetAttributes(attribute.Int("gateway.http_status", status))
+		if errObj, ok := payload.(map[string]any)["error"].(map[string]any); ok {
+			if code, ok := errObj["code"].(int); ok {
+				span.SetAttributes(attribute.Int("gateway.rpc_error", code))
+			}
+		}
+	}
 	// A client that holds a session id must get it back on every reply; clients that ignore the
 	// header are unaffected. The server keeps no session state either way.
 	if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -146,6 +157,14 @@ func rpcErr(id json.RawMessage, code int, msg string, data any) map[string]any {
 }
 
 func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// One span for the request: metrics already say how many, this says which one was slow.
+	// No user id goes into a span — a trace leaves this process by definition.
+	ctx, span := StartServerSpan(r.Context(), r, "mcp")
+	defer span.End()
+	r = r.WithContext(ctx)
+	if id := TraceID(ctx); id != "" {
+		w.Header().Set("X-Trace-Id", id)
+	}
 	if r.Method != http.MethodPost {
 		// Streamable HTTP allows a GET SSE stream; this gateway does not offer one, and saying
 		// so is better than hanging a client that expects it.
@@ -239,6 +258,14 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32602, "invalid params", nil))
 		return
 	}
+	// The tool is the unit of work: the cache decision, the upstream wait and the quota charge
+	// all belong to this span, so a slow answer can be attributed without reading three logs.
+	ctx, span := Tracer().Start(r.Context(), "mcp.tool",
+		trace.WithAttributes(attribute.String("mcp.tool", params.Name),
+			attribute.String("gateway.role", pal.Role), attribute.String("gateway.chat", pal.ChatType)))
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	meta, known := f.srv.Reg.Meta[params.Name]
 	decision, err := f.srv.Policy.Decide(pal, params.Name, meta, known)
 	if err != nil {
@@ -302,6 +329,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	cacheable := meta.TTL > 0
 	if cacheable {
 		if e, hit := f.srv.Cache.GetExact(key); hit {
+			span.SetAttributes(attribute.String("gateway.cache", "hit"))
 			f.mu.Lock()
 			f.hits++
 			f.byTool[params.Name]++
@@ -317,6 +345,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		// Not a miss yet: only the goroutine that becomes the leader counts one. A waiter is
 		// counted as coalesced, so the three numbers add up to the calls that arrived.
 	} else {
+		span.SetAttributes(attribute.String("gateway.cache", "bypass"))
 		f.mu.Lock()
 		f.bypass++
 		f.mu.Unlock()
@@ -346,6 +375,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		if slot, busy := f.inflight[key]; busy {
 			f.mu.Unlock()
 			<-slot.done
+			span.SetAttributes(attribute.String("gateway.cache", "coalesced"))
 			res, callErr = slot.res, slot.err
 			f.mu.Lock()
 			f.coalesced++
@@ -356,7 +386,9 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 			f.inflight[key] = slot
 			f.misses++
 			f.mu.Unlock()
-			res, callErr = f.srv.Reg.CallTool(params.Name, params.Arguments, pal.UserID)
+			span.SetAttributes(attribute.String("gateway.cache", "miss"),
+				attribute.Bool("gateway.leader", true))
+			res, callErr = f.srv.Reg.CallToolCtx(ctx, params.Name, params.Arguments, pal.UserID)
 			slot.res, slot.err = res, callErr
 			close(slot.done)
 			f.mu.Lock()
@@ -365,10 +397,16 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 			f.mu.Unlock()
 		}
 	} else {
-		res, callErr = f.srv.Reg.CallTool(params.Name, params.Arguments, pal.UserID)
+		res, callErr = f.srv.Reg.CallToolCtx(ctx, params.Name, params.Arguments, pal.UserID)
 		f.mu.Lock()
 		f.byTool[params.Name]++
 		f.mu.Unlock()
+	}
+
+	span.SetAttributes(attribute.Int64("gateway.upstream_ms", time.Since(started).Milliseconds()))
+	if callErr != nil {
+		span.RecordError(callErr)
+		span.SetStatus(codes.Error, "tool failed")
 	}
 
 	rec := map[string]any{"event": "mcp_call", "user": pal.UserID, "role": pal.Role,

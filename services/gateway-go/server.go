@@ -644,6 +644,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/admin/users", s.adminUsers)
 	mux.HandleFunc("/admin/users/", s.adminSetRole)
 	mux.HandleFunc("/admin/roles", s.adminRoles)
+	mux.HandleFunc("/admin/console", s.adminConsole)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})

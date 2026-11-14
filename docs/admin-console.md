@@ -22,6 +22,20 @@ Nothing above changes when SSO arrives: an OIDC-backed authenticator has to prod
 `policy.json` defines what a role *can* do; the role store says *who* has it. Keeping them apart
 means a permission change is not a deploy, and a deploy is not a permission change.
 
+## Page
+
+`GET /admin/console` serves one static HTML file (embedded in the binary): a token field, the
+list of people with a role selector, and the roles with their tools. It fetches the three
+endpoints below and keeps the token in `sessionStorage`, so the file itself carries no data and
+no session — an unauthenticated GET reveals nothing.
+
+```bash
+open http://127.0.0.1:8090/admin/console     # paste a token whose role has admin: true
+```
+
+Measured in a browser at 430 px wide: load → change a role → the row updates, the generation
+moves, and the previous holder of that token is refused on the next MCP request.
+
 ## API
 
 All endpoints need a bearer token whose role has `"admin": true` in `policy.json`.
@@ -80,7 +94,7 @@ audit                                           →  admin_role_change with acto
 
 ## What this does not do yet
 
-- No UI: a console page would be a thin client over these three endpoints.
+- No audit screen: the page shows the current state, not the history (the audit log has it).
 - No SSO: the authenticator is still the token file. The interface is one function away.
 - One role store per process: two gateways sharing a disk are not coordinated.
 - The role store is a JSON file, not a table: no history beyond the audit log, and no

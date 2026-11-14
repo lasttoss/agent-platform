@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role console</title>
+<style>
+  :root {
+    --paper: #f5f5f5; --ink: #2d3142; --muted: #4f5d75; --soft: #7a8399;
+    --accent: #eb6c36; --rule: #bfc0c0; --link: #2e5aa8; --ok: #2f7d4f; --bad: #b3423a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 16px 48px; background: var(--paper); color: var(--ink);
+    font: 13px/1.5 Inter, "Liberation Sans", system-ui, sans-serif;
+  }
+  header { max-width: 860px; margin: 0 auto 20px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--soft); font-size: 12px; }
+  main { max-width: 860px; margin: 0 auto; display: grid; gap: 20px; }
+  section { background: #fff; border: 1px solid var(--rule); border-radius: 6px; }
+  .sec-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--rule);
+  }
+  h2 { font-size: 13px; font-weight: 600; margin: 0; }
+  .note { color: var(--soft); font-size: 11px; }
+  form.token { display: flex; gap: 8px; padding: 12px 14px; flex-wrap: wrap; }
+  input, select, button {
+    font: inherit; color: var(--ink); background: #fff;
+    border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px;
+  }
+  input { flex: 1 1 220px; min-width: 0; }
+  button { cursor: pointer; background: var(--ink); color: #fff; border-color: var(--ink); }
+  button:hover { background: #3b405a; }
+  button.ghost { background: #fff; color: var(--ink); border-color: var(--rule); }
+  button:disabled { opacity: .45; cursor: default; }
+  ul.users { list-style: none; margin: 0; padding: 0; }
+  li.user {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px 10px;
+    padding: 12px 14px; border-top: 1px solid #e6e6e6; align-items: center;
+  }
+  li.user:first-child { border-top: 0; }
+  .who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .name { font-weight: 600; }
+  .meta { color: var(--soft); font-size: 11px; overflow-wrap: anywhere; }
+  .controls { display: flex; gap: 6px; align-items: center; }
+  .gen { font-variant-numeric: tabular-nums; color: var(--muted); }
+  ul.roles { list-style: none; margin: 0; padding: 4px 0; }
+  li.role { padding: 10px 14px; border-top: 1px solid #e6e6e6; }
+  li.role:first-child { border-top: 0; }
+  .role-name { font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+  .tag {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--accent); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px;
+  }
+  .tools { color: var(--muted); font-size: 11.5px; margin-top: 3px; overflow-wrap: anywhere; }
+  #status { min-height: 20px; font-size: 12px; }
+  #status.ok { color: var(--ok); }
+  #status.bad { color: var(--bad); }
+  .empty { padding: 14px; color: var(--soft); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Role console</h1>
+  <div class="sub">Login happens upstream. Paste the token of an account whose role has <code>admin: true</code>.</div>
+</header>
+
+<main>
+  <section>
+    <div class="sec-head">
+      <h2>Session</h2>
+      <span class="note">token stays in this tab (sessionStorage)</span>
+    </div>
+    <form class="token" id="tokenForm">
+      <input id="token" type="password" placeholder="bearer token" autocomplete="off" spellcheck="false">
+      <button type="submit">Load</button>
+      <button type="button" class="ghost" id="forget">Forget</button>
+    </form>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>People</h2>
+      <span class="note">generation <span class="gen" id="gen">–</span></span>
+    </div>
+    <ul class="users" id="users"><li class="empty">No token loaded.</li></ul>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Roles</h2>
+      <span class="note">what each role may do</span>
+    </div>
+    <ul class="roles" id="roles"><li class="empty">No token loaded.</li></ul>
+  </section>
+
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const status = (msg, kind) => { const el = $("status"); el.textContent = msg; el.className = kind || ""; };
+
+function token() { return sessionStorage.getItem("adminToken") || ""; }
+
+async function api(path, opts) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Authorization": "Bearer " + token(), "Content-Type": "application/json", ...(opts && opts.headers) },
+  });
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* empty body */ }
+  if (!res.ok) {
+    const why = (body && (body.error || body.message)) || ("HTTP " + res.status);
+    throw new Error(why);
+  }
+  return body;
+}
+
+function renderUsers(data) {
+  const list = $("users");
+  list.innerHTML = "";
+  $("gen").textContent = data.generation;
+  const roles = window.__roles || [];
+  if (!data.users.length) {
+    list.innerHTML = '<li class="empty">Nobody provisioned.</li>';
+    return;
+  }
+  for (const u of data.users) {
+    const li = document.createElement("li");
+    li.className = "user";
+
+    const who = document.createElement("div");
+    who.className = "who";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = u.name || u.subject;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = u.subject + " · role from " + u.source;
+    who.append(name, meta);
+
+    const controls = document.createElement("div");
+    controls.className = "controls";
+    const sel = document.createElement("select");
+    for (const r of roles) {
+      const o = document.createElement("option");
+      o.value = r.role; o.textContent = r.role;
+      if (r.role === u.role) o.selected = true;
+      sel.append(o);
+    }
+    const btn = document.createElement("button");
+    btn.textContent = "Set";
+    btn.onclick = () => setRole(u, sel, btn);
+    controls.append(sel, btn);
+
+    li.append(who, controls);
+    list.append(li);
+  }
+}
+
+async function setRole(u, sel, btn) {
+  const next = sel.value;
+  if (next === u.role) { status("No change for " + u.subject + ".", ""); return; }
+  btn.disabled = true;
+  try {
+    const out = await api("/admin/users/" + encodeURIComponent(u.subject) + "/role", {
+      method: "POST", body: JSON.stringify({ role: next }),
+    });
+    await load(out.subject + ": " + out.from + " → " + out.to + " (generation " + out.generation + ")");
+  } catch (e) {
+    status("Refused: " + e.message, "bad");
+    sel.value = u.role;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderRoles(roles) {
+  const list = $("roles");
+  list.innerHTML = "";
+  for (const r of roles) {
+    const li = document.createElement("li");
+    li.className = "role";
+    const head = document.createElement("div");
+    head.className = "role-name";
+    head.append(document.createTextNode(r.role));
+    if (r.admin) {
+      const tag = document.createElement("span");
+      tag.className = "tag"; tag.textContent = "admin";
+      head.append(tag);
+    }
+    const tools = document.createElement("div");
+    tools.className = "tools";
+    tools.textContent = r.tools.length ? r.tools.join(", ") : "no tools";
+    li.append(head, tools);
+    list.append(li);
+  }
+}
+
+async function load(keepMessage) {
+  if (!token()) { status("Paste a token to start.", ""); return; }
+  try {
+    const roles = await api("/admin/roles");
+    window.__roles = roles.roles;
+    renderRoles(roles.roles);
+    renderUsers(await api("/admin/users"));
+    if (keepMessage) status(keepMessage, "ok"); else status("Loaded.", "");
+  } catch (e) {
+    status("Cannot load: " + e.message, "bad");
+  }
+}
+
+$("tokenForm").onsubmit = (ev) => {
+  ev.preventDefault();
+  sessionStorage.setItem("adminToken", $("token").value.trim());
+  $("token").value = "";
+  load();
+};
+
+$("forget").onclick = () => {
+  sessionStorage.removeItem("adminToken");
+  window.__roles = null;
+  $("users").innerHTML = '<li class="empty">No token loaded.</li>';
+  $("roles").innerHTML = '<li class="empty">No token loaded.</li>';
+  $("gen").textContent = "–";
+  status("Token forgotten for this tab.", "");
+};
+
+if (token()) load();
+</script>
+</body>
+</html>

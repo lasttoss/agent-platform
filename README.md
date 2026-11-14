@@ -79,6 +79,14 @@ curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
 | Workers hold no authority and no platform credentials | `services/ocr/` | one worker bug widens authority for everyone |
 | Personal and third-party data leave the chat: DM only, aggregate in groups | `policy.json` + `server.py` | a salary or a candidate CV lands in a group |
 
+## Long-running tools
+
+Mark a tool `"long_running": true` in `config/tools.json` and the call returns
+`{"job_id": "...", "state": "running", "poll": "/v1/jobs/<id>"}` immediately; poll that path with
+the same bearer token. Jobs are per user (another user's id is a 404), capped at four running per
+user, audited, and swept an hour after they finish. They live in one process's memory: no queue,
+no retry, no durability. See `docs/operations.md` 2d.
+
 ## Tracing
 
 Off by default. `./gateway -otlp http://127.0.0.1:4318` exports one trace per request, with a

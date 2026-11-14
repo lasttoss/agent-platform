@@ -744,6 +744,7 @@ func (s *Server) Routes() http.Handler {
 	})
 	if s.MCP != nil {
 		mux.Handle("/mcp", s.MCP)
+		mux.HandleFunc("/v1/jobs/", s.MCP.PollJob)
 		mux.HandleFunc("/stats/mcp", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, s.MCP.Stats())
 		})

@@ -90,6 +90,36 @@ cardinality grows with every employee.
 and exits with `gateway stopped cleanly`. Compose sends `SIGTERM` on `down`, so a deploy no longer
 cuts a tool call in half and forgets the quota it just spent.
 
+## 2d. A slow tool becomes a job instead of a timeout
+
+`tools.json` marks a tool `long_running: true`; the call returns an id instead of waiting:
+
+```
+tools.json   "ocr_extract": {"ttl": 0, "timeout_s": 300, "long_running": true}
+
+call         {"job_id":"337188de...","state":"running","tool":"jira_get_issue","poll":"/v1/jobs/337188de..."}
+             → returned in 6 ms, while the tool itself took 31 ms
+poll         GET /v1/jobs/<id>   + the same bearer token as /mcp
+             {"state":"done","ms":31,"result":{...}}
+```
+
+Rules that make it safe rather than merely asynchronous:
+
+- **The id is a capability.** Another user's job and a made-up id both answer `404` (measured);
+  no token answers `401`. A `403` would confirm the id exists.
+- **The request is charged when accepted, the tokens when the answer exists.** A job that
+  produced 4 MB of JSON did spend it.
+- **Running jobs are capped per user (4) and refused, not queued** — a burst of jobs is a burst
+  of goroutines nobody asked for. Refusals are `-32007`, counted as `gateway_jobs_refused_total`.
+- **The in-flight slot belongs to the work, not to the caller**, so a build that outlives the
+  request still counts against `max_in_flight`.
+- Audited as `mcp_job_started` / `mcp_job_done` / `mcp_job_failed`, with the job id and duration.
+
+What this is not, stated plainly: there is no queue, no worker pool, no retry, and no durable
+store. Jobs live in one process's memory and are swept an hour after they finish. Kill the
+gateway and the running jobs are gone — which is why nothing in this repository marks a
+long-running tool by default.
+
 ## 2c. A slow answer can be attributed to one service
 
 Tracing is off by default: with no `-otlp` (or `OTLP_ENDPOINT`) there is no exporter, and no span
@@ -151,5 +181,6 @@ Latest run: `10/10 handwritten · 60/60 generated identical · 3 same-answer cac
 | Counters are eventually-consistent (5 s) | two replicas can overspend inside the window | a database round-trip per call, or Redis `INCRBY` |
 | The bucket is per process | two replicas = two buckets per user | shared store, same shape as counters |
 | Nothing traces the MCP services | the gateway span says which tool and how long, not what the service did inside | OTel SDK in each service, ~1 day |
-| Long tools block a request | a 5-minute build must become job + poll | job store + SSE progress, ~2 days |
+| Jobs are in-memory and single-process | a restart loses them; two replicas cannot poll each other's jobs | durable job store, ~1–2 days |
+| Jobs have no progress | a 5-minute job shows "running" and then "done" | SSE progress from the service, ~1 day |
 | Role store has no history | audit log has it, the UI does not | read `admin_role_change` back, ~half day |

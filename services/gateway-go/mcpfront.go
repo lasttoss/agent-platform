@@ -10,6 +10,7 @@ package main
 // an unpermitted tool something the model never learns about.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -27,6 +28,7 @@ import (
 type MCPFront struct {
 	srv    *Server
 	tokens *tokenSet
+	jobs   *JobStore
 
 	mu          sync.Mutex
 	hits        int
@@ -52,8 +54,32 @@ type inflightCall struct {
 }
 
 func NewMCPFront(s *Server, tokens *tokenSet) *MCPFront {
-	return &MCPFront{srv: s, tokens: tokens, denied: map[string]int{}, byTool: map[string]int{},
-		inflight: map[string]*inflightCall{}}
+	f := &MCPFront{srv: s, tokens: tokens, denied: map[string]int{}, byTool: map[string]int{},
+		inflight: map[string]*inflightCall{}, jobs: NewJobStore(time.Hour)}
+	go f.jobs.run(5 * time.Minute)
+	return f
+}
+
+// PollJob answers GET /v1/jobs/{id}. It is authenticated by the same bearer token as /mcp, so a
+// job is polled through the same door that created it — and only by the user who created it.
+func (f *MCPFront) PollJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET only"})
+		return
+	}
+	pal, ok := f.whoami(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return
+	}
+	job, ok := f.jobs.get(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), pal.UserID)
+	if !ok {
+		// Not 403: an id belonging to somebody else and an id that never existed must look the
+		// same, or the endpoint becomes a way to test whether a job exists.
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such job"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job.view())
 }
 
 func (f *MCPFront) Stats() map[string]any {
@@ -69,7 +95,7 @@ func (f *MCPFront) Stats() map[string]any {
 		"cache_hit_rate": rate, "calls": f.byTool, "denied": f.denied,
 		"tokens_active": f.tokens.Count(), "sse_responses": f.sse, "coalesced": f.coalesced,
 		"quota_denied": f.quotaDenied, "busy_denied": f.busyDenied,
-		"rate_limited": f.rateLimited,
+		"rate_limited": f.rateLimited, "jobs": f.jobs.stats(),
 	}
 }
 
@@ -313,6 +339,67 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.srv.audit(map[string]any{"event": "mcp_quota_denied", "user": pal.UserID,
 			"role": pal.Role, "tool": params.Name, "at": time.Now().UTC().Format(time.RFC3339)})
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32004, "quota exceeded for today", nil))
+		return
+	}
+
+	// A long tool becomes a job before the cache or the slot is touched: the request's whole job
+	// is to hand back an id, and the in-flight slot must belong to the work, not to a caller
+	// waiting for work that outlives the request.
+	if meta.LongRunning {
+		job, ok := f.jobs.create(pal.UserID, params.Name)
+		if !ok {
+			span.SetAttributes(attribute.String("gateway.outcome", "job_refused"))
+			f.srv.audit(map[string]any{"event": "mcp_job_refused", "user": pal.UserID,
+				"role": pal.Role, "tool": params.Name,
+				"at": time.Now().UTC().Format(time.RFC3339)})
+			f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32007,
+				fmt.Sprintf("too many running jobs (limit %d)", f.jobs.limit), nil))
+			return
+		}
+		// The request is charged when it is accepted, the tokens when the answer exists: a job
+		// that produced 4 MB of JSON did spend it.
+		f.srv.chargeRequest(pal.UserID)
+		span.SetAttributes(attribute.String("gateway.job", job.ID[:8]),
+			attribute.String("gateway.outcome", "job"))
+		f.srv.audit(map[string]any{"event": "mcp_job_started", "user": pal.UserID,
+			"role": pal.Role, "tool": params.Name, "job": job.ID,
+			"at": time.Now().UTC().Format(time.RFC3339)})
+
+		go func() {
+			started := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), toolTimeout(meta))
+			defer cancel()
+			release, ok := f.srv.acquire(params.Name, meta.MaxInFlight)
+			if !ok {
+				err := fmt.Errorf("busy: %s is saturated", params.Name)
+				f.jobs.finish(job.ID, nil, err)
+				f.srv.audit(map[string]any{"event": "mcp_job_failed", "user": pal.UserID,
+					"role": pal.Role, "tool": params.Name, "job": job.ID, "error": err.Error(),
+					"ms": time.Since(started).Milliseconds(),
+					"at": time.Now().UTC().Format(time.RFC3339)})
+				return
+			}
+			defer release()
+			res, err := f.srv.Reg.CallToolCtx(ctx, params.Name, params.Arguments, pal.UserID)
+			if err == nil {
+				raw, _ := json.Marshal(res)
+				f.srv.chargeTokens(pal.UserID, estimateTokens(string(raw)))
+			}
+			f.jobs.finish(job.ID, res, err)
+			rec := map[string]any{"event": "mcp_job_done", "user": pal.UserID, "role": pal.Role,
+				"tool": params.Name, "job": job.ID, "ms": time.Since(started).Milliseconds(),
+				"at": time.Now().UTC().Format(time.RFC3339)}
+			if err != nil {
+				rec["event"] = "mcp_job_failed"
+				rec["error"] = err.Error()
+			}
+			f.srv.audit(rec)
+		}()
+
+		body, _ := json.Marshal(map[string]any{"job_id": job.ID, "state": jobRunning,
+			"tool": params.Name, "poll": "/v1/jobs/" + job.ID})
+		f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
+			"content": []map[string]any{{"type": "text", "text": string(body)}}}))
 		return
 	}
 

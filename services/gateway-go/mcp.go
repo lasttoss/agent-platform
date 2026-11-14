@@ -37,8 +37,12 @@ type ToolMeta struct {
 	// TimeoutS is how long this tool may take. A build or an import needs minutes; a search
 	// needs seconds, and one global timeout is either too short for the first or too long for
 	// the second. 0 keeps the historical 60s.
-	TimeoutS    float64 `json:"timeout_s"`
-	Description string  `json:"description"`
+	TimeoutS float64 `json:"timeout_s"`
+	// LongRunning turns the call into a job: the request returns an id, the answer is fetched
+	// from /v1/jobs/{id}. For a build, an import or a PDF that takes minutes, waiting is not an
+	// option — the client times out and the work is repeated.
+	LongRunning bool   `json:"long_running"`
+	Description string `json:"description"`
 }
 
 func LoadToolsMeta(path string) (map[string]ToolMeta, error) {
@@ -418,16 +422,21 @@ func (r *Registry) CallToolCtx(ctx context.Context, tool string, args map[string
 	if !ok {
 		return nil, errors.New("no server advertises " + tool)
 	}
-	timeout := 60 * time.Second
-	if meta.TimeoutS > 0 {
-		timeout = time.Duration(meta.TimeoutS * float64(time.Second))
-	}
-	return srv.Client.CallTimeoutCtx(ctx, tool, args, caller, timeout)
+	return srv.Client.CallTimeoutCtx(ctx, tool, args, caller, toolTimeout(meta))
 }
 
 // Complete asks the model service — an MCP server, not a hardcoded provider — to choose a tool.
 // The gateway sends only the schemas it has already filtered, so an unoffered tool is not a
 // request the model can make.
+// toolTimeout is the deadline a tool gets. One number for a search and a PDF import is either
+// too short for the PDF or too long for the search.
+func toolTimeout(meta ToolMeta) time.Duration {
+	if meta.TimeoutS > 0 {
+		return time.Duration(meta.TimeoutS * float64(time.Second))
+	}
+	return 60 * time.Second
+}
+
 func (r *Registry) Complete(system, user string, tools []map[string]any) (ModelTurn, error) {
 	r.mu.RLock()
 	model := r.Model

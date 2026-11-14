@@ -45,6 +45,20 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 			line("%s %v", m.name, v)
 		}
 
+		if jobs, ok := st["jobs"].(map[string]any); ok {
+			for _, m := range []struct{ key, name, help, typ string }{
+				{"running", "gateway_jobs_running", "Jobs in flight in this process.", "gauge"},
+				{"started", "gateway_jobs_started_total", "Jobs accepted.", "counter"},
+				{"done", "gateway_jobs_done_total", "Jobs that produced an answer.", "counter"},
+				{"failed", "gateway_jobs_failed_total", "Jobs that ended in an error.", "counter"},
+				{"refused", "gateway_jobs_refused_total", "Jobs refused because the per-user limit was reached.", "counter"},
+			} {
+				line("# HELP %s %s", m.name, m.help)
+				line("# TYPE %s %s", m.name, m.typ)
+				line("%s %v", m.name, jobs[m.key])
+			}
+		}
+
 		if calls, ok := st["calls"].(map[string]int); ok {
 			tools := make([]string, 0, len(calls))
 			for t := range calls {

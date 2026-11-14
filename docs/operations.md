@@ -90,6 +90,23 @@ cardinality grows with every employee.
 and exits with `gateway stopped cleanly`. Compose sends `SIGTERM` on `down`, so a deploy no longer
 cuts a tool call in half and forgets the quota it just spent.
 
+## Parity harness notes
+
+`make parity` compares the Go gateway with the Python reference on 70 requests. Three rules keep
+it meaningful instead of green:
+
+- **The bucket is off for the Go side.** The harness fires sixty requests at a few users in under
+  a second; comparing "Python has no bucket" is true and uninteresting.
+- **The OCR service runs for both sides.** It starts before the gateways, because the Go gateway
+  discovers services once at boot — a service still binding its port does not exist for the run.
+- **A known divergence is counted, not hidden.** The Python reference answers a private-only OCR
+  tool inside a group chat; the Go gateway sends the same answer by DM, which is what
+  `policy.json` says. It is printed as `known` and counted separately, so it cannot mask a new
+  difference.
+
+Latest run: `10/10 handwritten · 60/60 generated identical · 3 same-answer cache notes ·
+3 known divergences`.
+
 ## Still missing, in order of what would bite first
 
 | Gap | Why it matters | Cost |

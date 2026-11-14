@@ -532,6 +532,12 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 
 func render(tool string, result map[string]any, callErr error) string {
 	if callErr != nil {
+		// A tool that reports a problem keeps its own words; the gateway only names the source.
+		// This matches the Python reference exactly ("OCR service error: not_a_file"), which is
+		// why the parity harness can compare the two replies at all.
+		if tool == "ocr_extract" || tool == "ocr_result" {
+			return "OCR service error: " + toolErrorText(callErr)
+		}
 		return "Service error: " + callErr.Error()
 	}
 	switch tool {
@@ -596,6 +602,18 @@ func render(tool string, result map[string]any, callErr error) string {
 	}
 	raw, _ := json.Marshal(result)
 	return string(raw)
+}
+
+// toolErrorText unwraps the JSON a service returns inside its MCP error, so the caller sees
+// "not_a_file" instead of a quoted object.
+func toolErrorText(err error) string {
+	var payload map[string]any
+	if json.Unmarshal([]byte(err.Error()), &payload) == nil {
+		if msg := asString(payload["error"]); msg != "" {
+			return msg
+		}
+	}
+	return err.Error()
 }
 
 func thousand(n int) string {

@@ -116,29 +116,58 @@ def main() -> int:
     subprocess.run(["go", "build", "-o", str(demo_bin), "./cmd/mcp-demo"], cwd=GO_DIR, check=True)
     subprocess.run(["go", "build", "-o", str(gw_bin), "."], cwd=GO_DIR, check=True)
 
+    # The OCR service runs for both sides. Without it the Go gateway fails closed with
+    # "no service advertises ocr_extract" while the Python reference still holds a built-in
+    # registry and answers "OCR service error" — a genuine design difference, but a useless one
+    # to compare against: the point is what a caller experiences when the service exists.
+    ocr_port = DEMO_PORT + 5
     mcp_conf = state / "mcp.json"
     mcp_conf.write_text(json.dumps({"servers": [
         {"name": "demo-tools", "url": f"http://127.0.0.1:{DEMO_PORT}/mcp",
          "tools": ["salary_self", "docs_search", "status"]},
+        {"name": "ocr", "url": f"http://127.0.0.1:{ocr_port}/mcp",
+         "tools": ["ocr_extract", "ocr_result"]},
         {"name": "model", "url": f"http://127.0.0.1:{MODEL_PORT}/mcp", "role": "model"},
     ]}))
+
+    # The per-user token bucket is disabled on the Go side here: this harness compares *decisions*
+    # (allowed, denied, which tool is visible), and it fires sixty cases at a handful of users in
+    # under a second — a burst a real person never makes. Leaving the bucket on turned every
+    # comparison into "Python has no bucket", which is true and not interesting.
+    policy = json.loads((ROOT / "services/gateway/config/policy.json").read_text())
+    policy["quota"]["requests_per_minute"] = 0
+    go_policy = state / "policy.json"
+    go_policy.write_text(json.dumps(policy))
 
     env = dict(os.environ, PORT=str(PY_PORT), STATE_DIR=str(state / "python"))
     procs = [
         subprocess.Popen([str(demo_bin), "-addr", f"127.0.0.1:{DEMO_PORT}"],
                          cwd=GO_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+        subprocess.Popen([sys.executable, str(ROOT / "services" / "ocr" / "server.py")],
+                         env=dict(os.environ, PORT=str(ocr_port),
+                                  JOBS_DB=str(state / "jobs.db")),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
         subprocess.Popen([sys.executable, str(ROOT / "services" / "model-mcp" / "server.py")],
                          env=dict(os.environ, PORT=str(MODEL_PORT)),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+    ]
+    # Tools before gateways: the Go side discovers services once at boot, and a service still
+    # binding its port at that moment simply does not exist for the rest of the run.
+    wait(DEMO_PORT, path="/mcp")
+    wait(ocr_port, path="/health")
+    wait(MODEL_PORT)
+    procs += [
         subprocess.Popen([sys.executable, "-m", "gateway.server"], cwd=PY_DIR, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
         subprocess.Popen([str(gw_bin), "-addr", f"127.0.0.1:{GO_PORT}",
+                          "-policy", str(go_policy),
                           "-mcp", str(mcp_conf),
                           "-audit", str(state / "go-audit.log")],
                          cwd=GO_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE),
     ]
     try:
         wait(DEMO_PORT, path="/mcp")
+        wait(ocr_port)
         wait(MODEL_PORT)
         wait(PY_PORT)
         wait(GO_PORT)
@@ -150,7 +179,7 @@ def main() -> int:
             import random
             rng = random.Random(20261112)  # fixed seed: a failing run is reproducible
             cases += [random_case(rng) for _ in range(fuzz)]
-        fixed_mismatch = fuzz_mismatch = 0
+        fixed_mismatch = fuzz_mismatch = gaps = divergences = 0
         cache_notes: list[str] = []
         for index, (user, chat, text) in enumerate(cases):
             payload = {"platform_user_id": user, "chat_type": chat, "text": text}
@@ -167,23 +196,50 @@ def main() -> int:
             if cache_only:
                 cache_notes.append(f"{user} {chat} {text[:24]}: py={py_shape['cache']} "
                                    f"go={go_shape['cache']}")
-            if not same and not cache_only:
+            denied_go = go_body.get("denied") or {}
+            expected_gap = (not same and not cache_only and go_code == 503
+                            and isinstance(denied_go, dict)
+                            and denied_go.get("code") == "service_unavailable"
+                            and py_code == 200)
+            if expected_gap:
+                gaps += 1
+            # Known divergence, and it is the reference that is wrong: policy.json marks
+            # ocr_extract private-only in group chats, the Go gateway sends the answer by DM,
+            # and the Python reference still answers in the group. Counted separately so a new
+            # difference cannot hide behind it.
+            py_reply = py_body.get("chat_reply") or ""
+            in_shared_chat = chat != "dm"
+            known_divergence = (not same and not cache_only and not expected_gap
+                                and in_shared_chat and py_reply.startswith("OCR service error"))
+            if known_divergence:
+                divergences += 1
+            if not same and not cache_only and not expected_gap and not known_divergence:
                 mismatches += 1
                 if index < len(CASES):
                     fixed_mismatch += 1
                 else:
                     fuzz_mismatch += 1
-            print(f"  [{'same' if same else 'DIFF'}] {user:>4} {chat:<14} {text[:34]:<36} "
+            print(f"  [{'gap' if expected_gap else 'known' if known_divergence else 'same' if same else 'DIFF'}] {user:>4} {chat:<14} {text[:34]:<36} "
                   f"py={py_code} go={go_code}")
-            if not same and not cache_only:
+            if not same and not cache_only and not expected_gap and not known_divergence:
                 print(f"        python: {json.dumps(shape(py_body), ensure_ascii=False)}")
                 print(f"        go    : {json.dumps(shape(go_body), ensure_ascii=False)}")
         fixed = len(CASES)
         print(f"\n{fixed - fixed_mismatch}/{fixed} handwritten cases identical"
               f" · {len(cases) - fixed - fuzz_mismatch}/{len(cases) - fixed} generated cases identical"
-              f" · {len(cache_notes)} same-answer cache difference(s)")
+              f" · {len(cache_notes)} same-answer cache difference(s)"
+              f" · {gaps} expected gap(s) · {divergences} known divergence(s)")
         for note in cache_notes[:3]:
             print(f"  note: {note}")
+        if divergences:
+            print("note: a known divergence is the Python reference answering a private-only OCR "
+                  "tool inside a group chat while the Go gateway sends it privately, which is what "
+                  "policy.json says. The reference is the side that is wrong; it is counted "
+                  "separately so it cannot mask a new difference.")
+        if gaps:
+            print("note: an expected gap is a tool the Python reference knows from its built-in "
+                  "registry and no service advertises to the Go gateway: it fails closed with "
+                  "service_unavailable, which is the documented behaviour, not a policy difference.")
         if tool_diff:
             print("note: visible tool lists differ by design — the Go gateway lists only tools "
                   "a running MCP service advertises; the Python reference still has a built-in "

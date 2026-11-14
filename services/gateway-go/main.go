@@ -143,17 +143,17 @@ func main() {
 	if *auditHTTP != "" {
 		fmt.Println("audit sink:", *auditHTTP)
 	}
-	if raw, err := os.ReadFile(*tokensPath); err != nil {
+	if _, err := os.ReadFile(*tokensPath); err != nil {
 		// No token file means /mcp stays off: an unauthenticated tool endpoint is worse than
 		// an absent one, and silence about it is worst of all.
 		log.Printf("mcp front disabled: %v", err)
 	} else {
-		var tm TokenMap
-		if err := json.Unmarshal(raw, &tm); err != nil {
+		ts, err := NewTokenSet(*tokensPath)
+		if err != nil {
 			log.Fatalf("tokens: %v", err)
 		}
-		srv.MCP = NewMCPFront(srv, tm.Tokens)
-		fmt.Printf("mcp front on /mcp — %d token(s), identity from transport\n", len(tm.Tokens))
+		srv.MCP = NewMCPFront(srv, ts)
+		fmt.Printf("mcp front on /mcp — %d token(s), identity from transport, hot reload on file change\n", ts.Count())
 	}
 	srv.AdapterToken = os.Getenv("ADAPTER_TOKEN")
 	if srv.AdapterToken != "" {

@@ -118,6 +118,20 @@ it is a call that never happens, so there is no denial to log and nothing for th
 Direct `curl` against `/mcp` with the dev token still gets `denied: tool_not_in_role`, which is
 the second line of defence for a client that ignores `tools/list`.
 
+## Streaming, concurrency, and rotation (measured)
+
+| What | How | Result |
+|---|---|---|
+| SSE | `Accept: text/event-stream` on `tools/list` | `200`, `Content-Type: text/event-stream`, body `event: message` + `data: {json-rpc}`; the real dsh client accepted it and completed a tool call (`sse_responses` 4 in that run) |
+| Concurrency | 40 parallel `tools/call`, 2 roles × 5 distinct arguments | 40/40 HTTP 200 in 0.04 s; 10 upstream calls (misses), 30 coalesced; the 41st identical call was a cache hit |
+| Single-flight | 20 identical concurrent calls in a Go test with an 80 ms upstream | exactly 1 upstream call, 19 coalesced, stable under `-race -count=3` |
+| Rotation | rewrite the token file, no restart | old token `401` on the next request, new token `200`, audit event `mcp_tokens_rotated` with masked prefixes |
+| Personal data | two users in the same role asking the same personal tool | both miss: the cache key is per user when `personal: true`, per role otherwise |
+
+Coalescing is what makes the cache useful under load: without it, twenty requests that arrive
+together all miss the empty cache and all reach the service, and the cache only helps the
+twenty-first. The three counters add up to the calls that arrived — `hits + misses + coalesced`.
+
 ## Limits (measured, not assumed)
 
 - dsh is `0.2.2-rc.1` and its README says compatibility-breaking changes are coming. The plugin
@@ -127,7 +141,11 @@ the second line of defence for a client that ignores `tools/list`.
 - Node engine requirement is `>=24.9.0`; this ran on 22.23.1 with an engine warning.
 - The gateway negotiates `2025-06-18` while dsh asked for `2025-11-25`. The client accepted the
   lower revision; a future revision may not.
-- Multi-user concurrency, SSE streaming responses (this gateway answers plain JSON only), and
-  token rotation are still untested.
+- The MCP path does not enforce the per-user quota from `policy.json` yet: `/v1/respond` charges
+  requests and tokens, `/mcp` does not. A caller could exceed the daily quota through MCP only.
+- There is no per-tool in-flight limit on this path, so a burst of *distinct* arguments reaches
+  the service as fast as clients send them.
+- Load was measured at 40 concurrent requests on one machine; that is a correctness check, not a
+  capacity number.
 - The model answered correctly but the harness asked `tools/list` twice in one run; a real
   deployment should treat that as normal startup behaviour, not as a caching bug.

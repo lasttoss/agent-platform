@@ -10,7 +10,6 @@ package main
 // an unpermitted tool something the model never learns about.
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -18,26 +17,33 @@ import (
 	"time"
 )
 
-type TokenMap struct {
-	// token → user id in policy.json. Demo tokens only; a real deployment issues these per
-	// user and rotates them, and this file is where the rotation would plug in.
-	Tokens map[string]string `json:"tokens"`
-}
-
 type MCPFront struct {
 	srv    *Server
-	tokens map[string]string
+	tokens *tokenSet
 
-	mu     sync.Mutex
-	hits   int
-	misses int
-	bypass int // tool with ttl 0: never cached, so neither hit nor miss
-	denied map[string]int
-	byTool map[string]int
+	mu         sync.Mutex
+	hits       int
+	misses     int
+	bypass     int // tool with ttl 0: never cached, so neither hit nor miss
+	coalesced  int // identical calls in flight at the same moment, answered once
+	sse        int
+	inflight   map[string]*inflightCall
+	denied     map[string]int
+	byTool     map[string]int
 }
 
-func NewMCPFront(s *Server, tokens map[string]string) *MCPFront {
-	return &MCPFront{srv: s, tokens: tokens, denied: map[string]int{}, byTool: map[string]int{}}
+// inflightCall is the single-flight slot for one cache key. Without it, twenty identical
+// requests arriving together all miss the empty cache and all reach the upstream service —
+// the cache only helps the *next* request, not the ones already in the air.
+type inflightCall struct {
+	done chan struct{}
+	res  map[string]any
+	err  error
+}
+
+func NewMCPFront(s *Server, tokens *tokenSet) *MCPFront {
+	return &MCPFront{srv: s, tokens: tokens, denied: map[string]int{}, byTool: map[string]int{},
+		inflight: map[string]*inflightCall{}}
 }
 
 func (f *MCPFront) Stats() map[string]any {
@@ -51,6 +57,7 @@ func (f *MCPFront) Stats() map[string]any {
 	return map[string]any{
 		"cache_hits": f.hits, "cache_misses": f.misses, "cache_bypass_no_ttl": f.bypass,
 		"cache_hit_rate": rate, "calls": f.byTool, "denied": f.denied,
+		"tokens_active": f.tokens.Count(), "sse_responses": f.sse, "coalesced": f.coalesced,
 	}
 }
 
@@ -63,16 +70,19 @@ func (f *MCPFront) whoami(r *http.Request) (Principal, bool) {
 	if tok == "" {
 		return Principal{}, false
 	}
-	for known, userID := range f.tokens {
-		if subtle.ConstantTimeCompare([]byte(known), []byte(tok)) == 1 {
-			pal, err := f.srv.Policy.Resolve(userID, "dm")
-			if err != nil {
-				return Principal{}, false
-			}
-			return pal, true
-		}
+	userID, ok, rep := f.tokens.Lookup(tok)
+	if len(rep.Added) > 0 || len(rep.Removed) > 0 {
+		f.srv.audit(map[string]any{"event": "mcp_tokens_rotated", "added": rep.Added,
+			"removed": rep.Removed, "at": time.Now().UTC().Format(time.RFC3339)})
 	}
-	return Principal{}, false
+	if !ok {
+		return Principal{}, false
+	}
+	pal, err := f.srv.Policy.Resolve(userID, "dm")
+	if err != nil {
+		return Principal{}, false
+	}
+	return pal, true
 }
 
 type mcpRequest struct {
@@ -80,6 +90,29 @@ type mcpRequest struct {
 	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params"`
+}
+
+// emit answers in JSON, or as a one-event SSE stream when the client asks for one.
+// Streamable HTTP permits either; a client that sends Accept: text/event-stream must not be
+// handed JSON and left to guess.
+func (f *MCPFront) emit(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		raw, _ := json.Marshal(payload)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(status)
+		w.Write([]byte("event: message\ndata: "))
+		w.Write(raw)
+		w.Write([]byte("\n\n"))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		f.mu.Lock()
+		f.sse++
+		f.mu.Unlock()
+		return
+	}
+	writeJSON(w, status, payload)
 }
 
 func rpcOK(id json.RawMessage, result any) map[string]any {
@@ -130,14 +163,14 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.srv.audit(map[string]any{"event": "mcp_initialize", "user": pal.UserID, "role": pal.Role,
 			"client": initParams.ClientInfo, "protocol": initParams.Protocol,
 			"at":     time.Now().UTC().Format(time.RFC3339)})
-		writeJSON(w, http.StatusOK, rpcOK(req.ID, map[string]any{
+		f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
 			"protocolVersion": "2025-06-18",
 			"serverInfo":      map[string]any{"name": "agent-gateway", "version": "0.1.0"},
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"instructions":    "Tools are filtered by the caller's role. A tool you cannot see is a tool you may not call.",
 		}))
 	case "ping":
-		writeJSON(w, http.StatusOK, rpcOK(req.ID, map[string]any{}))
+		f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{}))
 	case "tools/list":
 		tools := []map[string]any{}
 		for _, name := range f.srv.Policy.VisibleTools(pal, f.srv.Reg.Meta, f.srv.Reg, f.srv.Consent) {
@@ -158,11 +191,11 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// that a tool existed for a role at a moment in time.
 		f.srv.audit(map[string]any{"event": "mcp_tools_list", "user": pal.UserID, "role": pal.Role,
 			"count": len(names), "tools": names, "at": time.Now().UTC().Format(time.RFC3339)})
-		writeJSON(w, http.StatusOK, rpcOK(req.ID, map[string]any{"tools": tools}))
+		f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{"tools": tools}))
 	case "tools/call":
 		f.call(w, r, req, pal)
 	default:
-		writeJSON(w, http.StatusOK, rpcErr(req.ID, -32601, "method not found: "+req.Method, nil))
+		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32601, "method not found: "+req.Method, nil))
 	}
 }
 
@@ -172,7 +205,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil || params.Name == "" {
-		writeJSON(w, http.StatusOK, rpcErr(req.ID, -32602, "invalid params", nil))
+		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32602, "invalid params", nil))
 		return
 	}
 	meta, known := f.srv.Reg.Meta[params.Name]
@@ -181,11 +214,17 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.bumpDenied(params.Name)
 		f.srv.audit(map[string]any{"event": "mcp_denied", "user": pal.UserID, "role": pal.Role,
 			"tool": params.Name, "reason": err.Error(), "at": time.Now().UTC().Format(time.RFC3339)})
-		writeJSON(w, http.StatusOK, rpcErr(req.ID, -32003, "denied: "+err.Error(), nil))
+		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32003, "denied: "+err.Error(), nil))
 		return
 	}
 
-	key := hashKey(map[string]any{"tool": params.Name, "args": params.Arguments, "scope": pal.Role})
+	// Personal tools are cached per user; a role-wide key would hand one person's answer to
+	// the next person in the same role.
+	scope := "role:" + pal.Role
+	if meta.Personal {
+		scope = "user:" + pal.UserID
+	}
+	key := hashKey(map[string]any{"tool": params.Name, "args": params.Arguments, "scope": scope})
 	cacheable := meta.TTL > 0
 	if cacheable {
 		if e, hit := f.srv.Cache.GetExact(key); hit {
@@ -195,13 +234,12 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 			f.mu.Unlock()
 			f.srv.audit(map[string]any{"event": "mcp_call", "user": pal.UserID, "role": pal.Role,
 				"tool": params.Name, "cache": "hit", "at": time.Now().UTC().Format(time.RFC3339)})
-			writeJSON(w, http.StatusOK, rpcOK(req.ID, map[string]any{
+			f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
 				"content": []map[string]any{{"type": "text", "text": e.Answer}}}))
 			return
 		}
-		f.mu.Lock()
-		f.misses++
-		f.mu.Unlock()
+		// Not a miss yet: only the goroutine that becomes the leader counts one. A waiter is
+		// counted as coalesced, so the three numbers add up to the calls that arrived.
 	} else {
 		f.mu.Lock()
 		f.bypass++
@@ -209,10 +247,39 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	}
 
 	started := time.Now()
-	res, callErr := f.srv.Reg.CallTool(params.Name, params.Arguments, pal.UserID)
-	f.mu.Lock()
-	f.byTool[params.Name]++
-	f.mu.Unlock()
+
+	// One upstream call per identical in-flight request; the rest wait for that answer.
+	var res map[string]any
+	var callErr error
+	if cacheable {
+		f.mu.Lock()
+		if slot, busy := f.inflight[key]; busy {
+			f.mu.Unlock()
+			<-slot.done
+			res, callErr = slot.res, slot.err
+			f.mu.Lock()
+			f.coalesced++
+			f.byTool[params.Name]++
+			f.mu.Unlock()
+		} else {
+			slot := &inflightCall{done: make(chan struct{})}
+			f.inflight[key] = slot
+			f.misses++
+			f.mu.Unlock()
+			res, callErr = f.srv.Reg.CallTool(params.Name, params.Arguments, pal.UserID)
+			slot.res, slot.err = res, callErr
+			close(slot.done)
+			f.mu.Lock()
+			delete(f.inflight, key)
+			f.byTool[params.Name]++
+			f.mu.Unlock()
+		}
+	} else {
+		res, callErr = f.srv.Reg.CallTool(params.Name, params.Arguments, pal.UserID)
+		f.mu.Lock()
+		f.byTool[params.Name]++
+		f.mu.Unlock()
+	}
 
 	rec := map[string]any{"event": "mcp_call", "user": pal.UserID, "role": pal.Role,
 		"tool": params.Name, "decision": decision, "ms": time.Since(started).Milliseconds(),
@@ -223,7 +290,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	}
 	f.srv.audit(rec)
 	if callErr != nil {
-		writeJSON(w, http.StatusOK, rpcErr(req.ID, -32000, callErr.Error(), nil))
+		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32000, callErr.Error(), nil))
 		return
 	}
 
@@ -232,7 +299,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.srv.Cache.PutExact(key, CacheEntry{Answer: string(raw), Saved: 1,
 			Created: time.Now(), TTL: time.Duration(meta.TTL) * time.Second})
 	}
-	writeJSON(w, http.StatusOK, rpcOK(req.ID, map[string]any{
+	f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": string(raw)}}}))
 }
 

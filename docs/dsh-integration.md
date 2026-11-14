@@ -62,6 +62,34 @@ What it prints, and why each number matters:
 | `cache_bypass_no_ttl 1` for `jira_create_issue` | a write is never served from cache |
 | audit lines `mcp_tools_list`, `mcp_call`, `mcp_denied` | who saw what, who called what, and what was refused |
 
+## Put any OpenAI-compatible model behind dsh
+
+dsh ships DeepSeek-first, but a custom provider is a profile patch, not a fork. This ran against
+a relay that serves `deepseek-v4.1-flash` over OpenAI Chat Completions:
+
+```yaml
+# $DSH_HOME/profiles/headless/cordis.patch.yml
+- id: llm-pi-ai
+  config:
+    providers:
+      commandcode:
+        apiKeyEnv: COMMANDCODE_API_KEY     # keep the secret in the environment, not the file
+        api: openai-completions
+        baseURL: https://api.commandcode.ai/provider/v1
+        models:
+          - id: deepseek/deepseek-v4.1-flash
+
+- id: agent-default-model
+  config:
+    provider: commandcode
+    model: deepseek/deepseek-v4.1-flash
+```
+
+The shipped default route is `deepseek-official`; without the second patch dsh stops with
+`MISSING_CREDENTIAL: no API key for provider route "deepseek-official"` even when the relay key
+is exported. A provider speaks one protocol, so a relay serving both OpenAI- and
+Anthropic-shaped models needs one provider entry per protocol.
+
 ## End-to-end, with the real harness
 
 `dsh 0.2.2-rc.1`, profile `web`, `@deepseek-ai/dsh-mcp-client 0.0.1` (vendored), this gateway:
@@ -75,6 +103,21 @@ What it prints, and why each number matters:
 
 Same installed harness, different token, different tool surface — decided at the gateway.
 
+## A real agent turn, measured
+
+`dsh --profile headless "<prompt>"` with the relay above, the gateway, and `jira-mock`:
+
+| Run | Token | Result |
+|---|---|---|
+| "search issues in the platform team, list keys" | owner | answered `JIRA-102, JIRA-103`; audit `mcp_call` miss 30 ms |
+| same question again | owner | answered from gateway cache; audit `mcp_call` `cache: hit`, `cache_hit_rate 0.5` |
+| "create a jira issue titled 'dev attempt'" | dev | `mcp_tools_list` returned 2 tools; the model answered it has no create tool and made no attempt |
+
+The third row is the point of filtering before the call: an unlisted tool is not a refused call,
+it is a call that never happens, so there is no denial to log and nothing for the model to retry.
+Direct `curl` against `/mcp` with the dev token still gets `denied: tool_not_in_role`, which is
+the second line of defence for a client that ignores `tools/list`.
+
 ## Limits (measured, not assumed)
 
 - dsh is `0.2.2-rc.1` and its README says compatibility-breaking changes are coming. The plugin
@@ -84,5 +127,7 @@ Same installed harness, different token, different tool surface — decided at t
 - Node engine requirement is `>=24.9.0`; this ran on 22.23.1 with an engine warning.
 - The gateway negotiates `2025-06-18` while dsh asked for `2025-11-25`. The client accepted the
   lower revision; a future revision may not.
-- Not tested: dsh actually calling a tool (needs a model API key), multi-user concurrency,
-  SSE streaming responses (this gateway answers plain JSON only), and token rotation.
+- Multi-user concurrency, SSE streaming responses (this gateway answers plain JSON only), and
+  token rotation are still untested.
+- The model answered correctly but the harness asked `tools/list` twice in one run; a real
+  deployment should treat that as normal startup behaviour, not as a caching bug.

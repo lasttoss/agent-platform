@@ -28,8 +28,10 @@ type MCPFront struct {
 	coalesced  int // identical calls in flight at the same moment, answered once
 	sse        int
 	inflight   map[string]*inflightCall
-	denied     map[string]int
-	byTool     map[string]int
+	denied      map[string]int
+	quotaDenied int
+	busyDenied  int
+	byTool      map[string]int
 }
 
 // inflightCall is the single-flight slot for one cache key. Without it, twenty identical
@@ -58,6 +60,7 @@ func (f *MCPFront) Stats() map[string]any {
 		"cache_hits": f.hits, "cache_misses": f.misses, "cache_bypass_no_ttl": f.bypass,
 		"cache_hit_rate": rate, "calls": f.byTool, "denied": f.denied,
 		"tokens_active": f.tokens.Count(), "sse_responses": f.sse, "coalesced": f.coalesced,
+		"quota_denied": f.quotaDenied, "busy_denied": f.busyDenied,
 	}
 }
 
@@ -218,6 +221,18 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		return
 	}
 
+	// The same daily quota as /v1/respond: an MCP client is another way to spend the allowance,
+	// not a way around it. Charging happens after the answer, counting happens here.
+	if f.srv.overQuota(pal.UserID) {
+		f.mu.Lock()
+		f.quotaDenied++
+		f.mu.Unlock()
+		f.srv.audit(map[string]any{"event": "mcp_quota_denied", "user": pal.UserID,
+			"role": pal.Role, "tool": params.Name, "at": time.Now().UTC().Format(time.RFC3339)})
+		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32004, "quota exceeded for today", nil))
+		return
+	}
+
 	// Personal tools are cached per user; a role-wide key would hand one person's answer to
 	// the next person in the same role.
 	scope := "role:" + pal.Role
@@ -232,6 +247,8 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 			f.hits++
 			f.byTool[params.Name]++
 			f.mu.Unlock()
+			f.srv.chargeRequest(pal.UserID)
+			f.srv.chargeTokens(pal.UserID, estimateTokens(e.Answer))
 			f.srv.audit(map[string]any{"event": "mcp_call", "user": pal.UserID, "role": pal.Role,
 				"tool": params.Name, "cache": "hit", "at": time.Now().UTC().Format(time.RFC3339)})
 			f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
@@ -245,6 +262,20 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.bypass++
 		f.mu.Unlock()
 	}
+
+	// A saturated tool answers "busy" instead of queueing: queueing turns a slow service into a
+	// slow caller, and a burst into a timeout.
+	release, ok := f.srv.acquire(params.Name, meta.MaxInFlight)
+	if !ok {
+		f.mu.Lock()
+		f.busyDenied++
+		f.mu.Unlock()
+		f.srv.audit(map[string]any{"event": "mcp_busy", "user": pal.UserID, "role": pal.Role,
+			"tool": params.Name, "at": time.Now().UTC().Format(time.RFC3339)})
+		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32005, "busy: "+params.Name+" is saturated", nil))
+		return
+	}
+	defer release()
 
 	started := time.Now()
 
@@ -294,13 +325,25 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		return
 	}
 
+	f.srv.chargeRequest(pal.UserID)
 	raw, _ := json.Marshal(res)
+	f.srv.chargeTokens(pal.UserID, estimateTokens(string(raw)))
 	if cacheable {
 		f.srv.Cache.PutExact(key, CacheEntry{Answer: string(raw), Saved: 1,
 			Created: time.Now(), TTL: time.Duration(meta.TTL) * time.Second})
 	}
 	f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": string(raw)}}}))
+}
+
+// estimateTokens keeps the quota honest without a tokenizer: 4 bytes per token is the usual
+// rule of thumb for JSON, and a quota that is approximately right beats one that is absent.
+// It is an estimate and the docs say so.
+func estimateTokens(s string) int {
+	if n := len(s) / 4; n > 0 {
+		return n
+	}
+	return 1
 }
 
 func (f *MCPFront) bumpDenied(tool string) {

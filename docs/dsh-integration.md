@@ -128,6 +128,18 @@ the second line of defence for a client that ignores `tools/list`.
 | Rotation | rewrite the token file, no restart | old token `401` on the next request, new token `200`, audit event `mcp_tokens_rotated` with masked prefixes |
 | Personal data | two users in the same role asking the same personal tool | both miss: the cache key is per user when `personal: true`, per role otherwise |
 
+Quota, saturation, and load, all on the same code path:
+
+| Knob | Observed |
+|---|---|
+| Daily quota (shared with `/v1/respond`) | at 200 requests/day: 215 calls → 18 refused with `quota exceeded`, refusals audited; another user still has their own allowance |
+| `max_in_flight` per tool | ceiling 2, 6 simultaneous calls → 2 served, 4 refused `busy: …`, never queued |
+| Load, distinct arguments, one machine | 200 concurrent → 1600 requests, 0 errors, 3924 req/s, p50 42.8 ms, p95 57.1 ms, p99 64.3 ms |
+| Gateway overhead | at concurrency 1, p50 31.6 ms against a mock that sleeps 30 ms ⇒ roughly 1.6 ms of gateway work |
+
+`scripts/loadtest_mcp.py` reproduces the table; it uses distinct arguments on purpose, because
+identical ones would measure the cache instead of the gateway.
+
 Coalescing is what makes the cache useful under load: without it, twenty requests that arrive
 together all miss the empty cache and all reach the service, and the cache only helps the
 twenty-first. The three counters add up to the calls that arrived — `hits + misses + coalesced`.
@@ -141,11 +153,12 @@ twenty-first. The three counters add up to the calls that arrived — `hits + mi
 - Node engine requirement is `>=24.9.0`; this ran on 22.23.1 with an engine warning.
 - The gateway negotiates `2025-06-18` while dsh asked for `2025-11-25`. The client accepted the
   lower revision; a future revision may not.
-- The MCP path does not enforce the per-user quota from `policy.json` yet: `/v1/respond` charges
-  requests and tokens, `/mcp` does not. A caller could exceed the daily quota through MCP only.
-- There is no per-tool in-flight limit on this path, so a burst of *distinct* arguments reaches
-  the service as fast as clients send them.
-- Load was measured at 40 concurrent requests on one machine; that is a correctness check, not a
-  capacity number.
+- Token spending on this path is an estimate (JSON bytes / 4), not a tokenizer count. The
+  request quota is exact; the token quota is approximately right, and the docs say so.
+- Load numbers come from one machine over loopback against a mock that sleeps 30 ms: they
+  describe gateway overhead, not the capacity of a real Jira.
+- Saturation answers `busy` immediately instead of queueing. That is a deliberate policy, and it
+  means a client that wants to wait must retry.
+- Nothing here is distributed: one gateway process, one token file, one audit file on disk.
 - The model answered correctly but the harness asked `tools/list` twice in one run; a real
   deployment should treat that as normal startup behaviour, not as a caching bug.

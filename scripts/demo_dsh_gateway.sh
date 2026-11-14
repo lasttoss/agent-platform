@@ -69,7 +69,29 @@ echo "  HTTP 200: $(grep -c '^200$' "$STATE/codes")/40 trong $(python3 -c "print
 stats | grep -E 'cache_misses|coalesced'
 echo "  (10 miss = 2 role × 5 args tới service thật; 30 coalesced = phần còn lại chờ chung kết quả)"
 
-echo; echo "── 7. rotate token, KHÔNG restart ───────────────────────────────"
+echo; echo "── 7. quota dùng chung với /v1/respond (200 request/ngày) ───────"
+python3 - "$OWNER" "$URL" <<'PY'
+import json, sys, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+token, url = sys.argv[1], sys.argv[2]
+def one(i):
+    body = json.dumps({"jsonrpc":"2.0","id":i,"method":"tools/call",
+                       "params":{"name":"jira_search","arguments":{"query":f"quota-{i}"}}}).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+        headers={"Content-Type":"application/json","Authorization":f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.loads(r.read())
+            return d.get("error", {}).get("message", "")
+    except Exception as e:
+        return type(e).__name__
+with ThreadPoolExecutor(max_workers=20) as ex:
+    msgs = list(ex.map(one, range(215)))
+denied = [m for m in msgs if "quota" in m]
+print(f"  215 request → {len(denied)} bị chặn vì quota, ví dụ: {denied[0] if denied else 'KHÔNG CÓ'}")
+PY
+
+echo; echo "── 8. rotate token, KHÔNG restart ───────────────────────────────"
 python3 -c "
 import json
 d=json.load(open('config/dsh-tokens.json'))
@@ -82,9 +104,9 @@ echo -n "  token mới → "; curl -s -o /dev/null -w 'HTTP %{http_code}\n' -H "
   -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":22,"method":"tools/list"}' "$URL"
 cp "$STATE/tokens.bak" config/dsh-tokens.json
 
-echo; echo "── 8. audit (dòng thật, do gateway ghi) ─────────────────────────"
-grep -E 'mcp_tokens_rotated|mcp_denied|mcp_call' "$STATE/audit.log" | tail -n 6
+echo; echo "── 9. audit (dòng thật, do gateway ghi) ─────────────────────────"
+grep -E 'mcp_tokens_rotated|mcp_denied|mcp_quota_denied|mcp_busy' "$STATE/audit.log" | tail -n 6
 
-echo; echo "── 9. stats cuối ───────────────────────────────────────────────"
+echo; echo "── 10. stats cuối ──────────────────────────────────────────────"
 stats
 echo "state: $STATE"

@@ -21,12 +21,23 @@ import (
 // exercises the same path as production: token → policy → registry → upstream.
 func testGateway(t *testing.T) (string, string, string) {
 	t.Helper()
-	return testGatewayWithCounter(t, nil)
+	return testGatewayOpts(t, nil, 0, 1000, 0)
 }
 
 // testGatewayWithCounter is the same gateway; a non-nil counter counts upstream tool calls, so
 // a test can prove that concurrency did not multiply them.
 func testGatewayWithCounter(t *testing.T, upstreamCalls *int32, delay ...time.Duration) (string, string, string) {
+	t.Helper()
+	var d time.Duration
+	if len(delay) > 0 {
+		d = delay[0]
+	}
+	return testGatewayOpts(t, upstreamCalls, d, 1000, 0)
+}
+
+// testGatewayOpts is the same gateway with the knobs a test needs: a slow upstream, a smaller
+// daily quota, and a per-tool in-flight ceiling.
+func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, requestsPerDay, maxInFlight int) (string, string, string) {
 	t.Helper()
 	upstream := httptest.NewServer(&mcpserver.Handler{
 		Name: "up", Version: "t",
@@ -39,8 +50,8 @@ func testGatewayWithCounter(t *testing.T, upstreamCalls *int32, delay ...time.Du
 			if upstreamCalls != nil {
 				atomic.AddInt32(upstreamCalls, 1)
 			}
-			if len(delay) > 0 {
-				time.Sleep(delay[0]) // keep the slot occupied so waiters really wait
+			if delay > 0 {
+				time.Sleep(delay) // keep the slot occupied so waiters really wait
 			}
 			return map[string]any{"content": []map[string]any{{"type": "text",
 				"text": fmt.Sprintf("%s:%v:%s", name, args["q"], r.Header.Get("X-Caller-Id"))}}}, nil
@@ -56,21 +67,21 @@ func testGatewayWithCounter(t *testing.T, upstreamCalls *int32, delay ...time.Du
 		}
 		return p
 	}
-	policyPath := write("policy.json", `{
+	policyPath := write("policy.json", fmt.Sprintf(`{
       "allow_unknown_users": false,
       "users": {"1001": {"name":"Owner","role":"owner","workspace":"d"},
                 "2002": {"name":"Dev","role":"dev","workspace":"d"},
                 "3003": {"name":"Dev2","role":"dev","workspace":"d"}},
       "roles": {"owner": {"tools":["*"]}, "dev": {"tools":["echo","personal_echo"]}},
       "chats": {"dm": {"tools":["echo","personal_echo","write_thing"], "personal_data": true, "free_chat": true}},
-      "quota": {"requests_per_day": 1000, "tokens_per_day": 100000}
-    }`)
+      "quota": {"requests_per_day": %d, "tokens_per_day": 100000}
+    }`, requestsPerDay))
 	consentPath := write("consent.json", `{}`)
-	metaPath := write("tools.json", `{
-      "echo": {"description":"echo","ttl":600},
+	metaPath := write("tools.json", fmt.Sprintf(`{
+      "echo": {"description":"echo","ttl":600,"max_in_flight":%d},
       "personal_echo": {"description":"personal","personal":true,"ttl":600},
       "write_thing": {"description":"write","ttl":0}
-    }`)
+    }`, maxInFlight))
 	mcpPath := write("mcp.json", fmt.Sprintf(`{"servers":[{"name":"up","url":%q,"tools":["echo","personal_echo","write_thing"]}]}`, upstream.URL+"/mcp"))
 	tokensPath := write("tokens.json", `{"tokens":{"tok-owner":"1001","tok-dev":"2002","tok-dev-2":"3003"}}`)
 
@@ -311,5 +322,64 @@ func TestMCPFrontCoalescesIdenticalInFlightCalls(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&st)
 	if st["coalesced"].(float64) != 19 {
 		t.Fatalf("want 19 coalesced, got %v", st["coalesced"])
+	}
+}
+
+func TestMCPFrontEnforcesDailyQuota(t *testing.T) {
+	base, _, auditPath := testGatewayOpts(t, nil, 0, 3, 0)
+	for i := 0; i < 3; i++ {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"echo","arguments":{"q":"q%d"}}}`, i, i)
+		if code, resp := call(t, base, "tok-owner", body, ""); code != 200 || strings.Contains(resp, "quota") {
+			t.Fatalf("call %d should be allowed: %s", i, resp)
+		}
+	}
+	code, resp := call(t, base, "tok-owner",
+		`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"echo","arguments":{"q":"over"}}}`, "")
+	if code != 200 || !strings.Contains(resp, "quota exceeded") {
+		t.Fatalf("4th call must hit the quota: %d %s", code, resp)
+	}
+	raw, _ := os.ReadFile(auditPath)
+	if !strings.Contains(string(raw), "mcp_quota_denied") {
+		t.Fatal("quota denial must be audited")
+	}
+	// A different user has their own allowance.
+	if _, resp := call(t, base, "tok-dev", `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"echo","arguments":{"q":"x"}}}`, ""); strings.Contains(resp, "quota") {
+		t.Fatalf("quota is per user, not global: %s", resp)
+	}
+}
+
+func TestMCPFrontRejectsWhenToolSaturated(t *testing.T) {
+	base, _, _ := testGatewayOpts(t, nil, 150*time.Millisecond, 1000, 2)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	okCount, busyCount := 0, 0
+	start := make(chan struct{})
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release together, so the ceiling is exercised
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"echo","arguments":{"q":"d%d"}}}`, i, i)
+			_, resp := call(t, base, "tok-owner", body, "")
+			mu.Lock()
+			if strings.Contains(resp, "busy:") {
+				busyCount++
+			} else {
+				okCount++
+			}
+			mu.Unlock()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if okCount != 2 || busyCount != 4 {
+		t.Fatalf("want 2 served and 4 refused at a ceiling of 2, got ok=%d busy=%d", okCount, busyCount)
+	}
+	resp, _ := http.Get(base + "/stats/mcp")
+	defer resp.Body.Close()
+	var st map[string]any
+	json.NewDecoder(resp.Body).Decode(&st)
+	if st["busy_denied"].(float64) != 4 {
+		t.Fatalf("busy_denied: %v", st["busy_denied"])
 	}
 }

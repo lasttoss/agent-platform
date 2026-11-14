@@ -114,33 +114,86 @@ def _ch_error(exc: Exception) -> str:
 
 
 def schema_text(table: str = "") -> str:
+    """Tables, engines and — where it matters — which table is a pre-aggregated view.
+
+    A model that only sees column names will happily `SELECT sum(duration_ms) FROM events`. That
+    is correct until the raw table is trimmed and the aggregate states are the only history left,
+    at which point it is confidently wrong. So the description names the engine, points a
+    materialized view at its target, and says out loud that AggregateFunction columns need their
+    `-Merge` combinator.
+    """
     where = "WHERE database = currentDatabase()"
     if table:
         where += " AND table = " + "'" + table.replace("'", "''") + "'"
-    sql = ("SELECT table, name, type FROM system.columns " + where +
-           " ORDER BY table, position FORMAT JSON")
-    raw = _ch(sql, {"database": CH_DATABASE, "max_execution_time": "5"}, 10)
-    data = json.loads(raw).get("data") or []
-    if not data:
+    cols = json.loads(_ch(
+        "SELECT table, name, type FROM system.columns " + where +
+        " ORDER BY table, position FORMAT JSON",
+        {"database": CH_DATABASE, "max_execution_time": "5"}, 10)).get("data") or []
+    tables = json.loads(_ch(
+        "SELECT name, engine, create_table_query FROM system.tables " + where +
+        " ORDER BY name FORMAT JSON",
+        {"database": CH_DATABASE, "max_execution_time": "5"}, 10)).get("data") or []
+    if not cols and not tables:
         return f"(no tables in {CH_DATABASE})" if not table else f"(no table named {table})"
-    # One block per table, columns aligned: this text goes into a model prompt and into a chat
-    # answer, so a stray blank line is noise in both.
-    blocks, current, cols = [], "", []
-    for row in data:
-        if row["table"] != current:
-            if current:
-                blocks.append(_table_block(current, cols))
-            current, cols = row["table"], []
-        cols.append((row["name"], row["type"]))
-    if current:
-        blocks.append(_table_block(current, cols))
-    return "\n".join(blocks)
+
+    by_table: dict[str, list[tuple[str, str]]] = {}
+    for row in cols:
+        by_table.setdefault(row["table"], []).append((row["name"], row["type"]))
+    engines = {t["name"]: (t["engine"], t.get("create_table_query") or "") for t in tables}
+
+    blocks = []
+    for name in sorted(set(by_table) | set(engines)):
+        engine, ddl = engines.get(name, ("", ""))
+        header = name
+        if engine and engine != "MergeTree":
+            header += f" ({engine}"
+            target = _mv_target(ddl)
+            if target:
+                header += f" → {target}"
+            header += ")"
+        elif engine:
+            header += f" ({engine})"
+        body = list(by_table.get(name, []))
+        block = [header]
+        width = max((len(c) for c, _ in body), default=0)
+        for col, typ in body:
+            line = f"  {col.ljust(width)}  {typ}"
+            merge = _merge_hint(col, typ)
+            if merge:
+                line += f"   → {merge}"
+            block.append(line)
+        if any(t.startswith("AggregateFunction(") for _, t in body):
+            block.append("  # each aggregate state has exactly one combinator, shown per column: "
+                         "a count state needs countMerge, not sumMerge")
+        blocks.append("\n".join(block))
+    out = "\n\n".join(blocks)
+    if any("MaterializedView" in e for e, _ in engines.values()):
+        out += ("\n\n# A materialized view keeps the pre-aggregated history; the raw table may be "
+                "trimmed by TTL. Prefer the aggregated table for questions about history.")
+    return out
 
 
-def _table_block(table: str, cols: list[tuple[str, str]]) -> str:
-    width = max((len(name) for name, _ in cols), default=0)
-    body = "".join(f"  {name.ljust(width)}  {typ}\n" for name, typ in cols)
-    return f"{table}\n{body}"
+def _merge_hint(column: str, typ: str) -> str:
+    """The combinator for one aggregate column, spelled out: `sumMerge(events)` on a count state
+    is a type error ClickHouse reports as "Aggregate function sum requires single argument", which
+    is a confusing way to learn that the column does not hold a number."""
+    if not typ.startswith("AggregateFunction("):
+        return ""
+    inner = typ[len("AggregateFunction("):].rstrip(")")
+    fn = inner.split(",")[0].strip().lower()
+    if not fn:
+        return ""
+    return f"{fn}Merge({column})"
+
+
+def _mv_target(ddl: str) -> str:
+    """The table a materialized view writes into (`TO db.table`), for the one-line header."""
+    marker = " TO "
+    i = ddl.upper().find(marker)
+    if i < 0:
+        return ""
+    rest = ddl[i + len(marker):].strip().split()[0]
+    return rest.split(".")[-1].strip("`")
 
 
 def run_sql(sql: str, limit: int = DEFAULT_LIMIT, timeout: float | None = None) -> dict:

@@ -75,6 +75,56 @@ is returned for inspection, and a destructive question produces no write. What i
 that translation is always correct — a wrong-but-valid SELECT would be executed, which is why the
 SQL is printed next to the rows.
 
+## Aggregate materialized views: what breaks, measured
+
+A schema description that only lists column names lets a model write `SELECT sum(duration_ms)
+FROM events`. That is right until the raw table is trimmed and the aggregate states are the only
+history left, and then it is confidently wrong. `ch_schema` therefore describes the engine, points
+a view at its target, and names the combinator **per column**:
+
+```
+events_daily (AggregatingMergeTree)
+  events    AggregateFunction(count)          → countMerge(events)
+  total_ms  AggregateFunction(sum, UInt32)    → sumMerge(total_ms)
+  avg_ms    AggregateFunction(avg, UInt32)    → avgMerge(avg_ms)
+
+events_daily_mv (MaterializedView → events_daily)
+# A materialized view keeps the pre-aggregated history; the raw table may be trimmed by TTL.
+```
+
+Why per column: `sumMerge(events)` on a count state fails as *"Aggregate function sum requires
+single argument"* — measured, and a confusing way to learn that the column is not a number.
+
+### Two writers, same schema, same database
+
+`scripts/bench_nlp_mv.py`: 7 questions (all requiring `-Merge` combinators), 3 runs per cell,
+**raw trimmed to 1.4M rows while the view still holds 5M**, DeepSeek V4.1 Flash for both,
+so the only difference is who calls the model.
+
+```
+writer          correct      median    p90    used the aggregated table
+our nlp_ask     20/21 (95%)  2536 ms   3899 ms   20/21
+ClickHouse      17/21 (80%)  2047 ms   3217 ms   21/21
+  aiGenerate
+```
+- **Accuracy** is the same order; the misses were both writers producing an aggregate of an
+  aggregate (`sum(countMerge(events))`) that ClickHouse rejects — a model mistake, not a path
+  mistake. The sample is 7 questions: this is a smoke-sized benchmark, not a claim about quality.
+- **Latency** is dominated by the model call (1.5–5 s), not by the hop: in-database is ~20 %
+  faster in this sample and that is inside the noise of a network model.
+- **Both** now use the materialized view, which is the point: the fix that mattered was the schema
+  text, not the caller.
+
+Cost of reading the raw table instead, measured on 46.4M rows:
+
+```
+SELECT event, avg(duration_ms) FROM events GROUP BY event        → 46.4M rows · 43–50 ms
+SELECT event, avgMerge(avg_ms) FROM events_daily GROUP BY event   →        192 rows · 1.7–2.3 ms
+```
+
+At 46.4M rows the wall-clock gap is ~22x; the row gap is ~240000x. Small data hides this, which is
+why the benchmark trims the raw table instead of trusting speed alone.
+
 ## Limits, stated
 
 - No `LIMIT` is injected into the caller's SQL; the row cap is enforced by `max_result_rows` and

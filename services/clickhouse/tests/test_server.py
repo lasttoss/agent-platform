@@ -44,6 +44,16 @@ class FakeClickHouse:
                         {"table": "events", "name": "ts", "type": "DateTime"},
                         {"table": "events", "name": "player_id", "type": "UInt32"},
                         {"table": "players", "name": "id", "type": "UInt32"},
+                        {"table": "events_daily", "name": "day", "type": "Date"},
+                        {"table": "events_daily", "name": "events", "type": "AggregateFunction(count)"},
+                    ]}
+                elif "system.tables" in body:
+                    doc = {"data": [
+                        {"name": "events", "engine": "MergeTree", "create_table_query": ""},
+                        {"name": "events_daily", "engine": "AggregatingMergeTree", "create_table_query": ""},
+                        {"name": "events_daily_mv", "engine": "MaterializedView",
+                         "create_table_query": "CREATE MATERIALIZED VIEW analytics.events_daily_mv TO analytics.events_daily AS SELECT 1"},
+                        {"name": "players", "engine": "MergeTree", "create_table_query": ""},
                     ]}
                 else:
                     cap = int(query.get("max_result_rows", ["1000"])[0])
@@ -144,9 +154,18 @@ class ServiceTest(unittest.TestCase):
 
     def test_schema_lists_tables(self):
         text = server.schema_text()
-        self.assertRegex(text, r"events\n  ts\s+DateTime")
+        self.assertRegex(text, r"events \(MergeTree\)")
         self.assertRegex(text, r"  player_id\s+UInt32")
-        self.assertRegex(text, r"players\n  id\s+UInt32")
+        self.assertRegex(text, r"players \(MergeTree\)")
+
+    def test_schema_says_which_table_is_pre_aggregated(self):
+        """A model that only sees columns sums the raw table and is confidently wrong once the
+        raw table is trimmed, so the description has to carry the engine and the Merge rule."""
+        text = server.schema_text()
+        self.assertIn("events_daily (AggregatingMergeTree)", text)
+        self.assertIn("events_daily_mv (MaterializedView → events_daily)", text)
+        self.assertIn("→ countMerge(events)", text)
+        self.assertIn("Prefer the aggregated table", text)
 
     def test_rows_are_capped_and_said_so(self):
         self.ch.rows = [{"a": i} for i in range(10)]
@@ -193,7 +212,8 @@ class ServiceTest(unittest.TestCase):
             self.assertTrue(out["result"]["isError"])
             self.assertIn("model_returned_no_sql", out["result"]["content"][0]["text"])
             # Reading the schema for the prompt is expected; running a generated query is not.
-            self.assertTrue(all("system.columns" in q for q in self.ch.queries), self.ch.queries)
+            self.assertTrue(all(("system.columns" in q or "system.tables" in q) for q in self.ch.queries),
+                            self.ch.queries)
         finally:
             model.close()
 

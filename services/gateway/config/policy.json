@@ -85,6 +85,8 @@
   },
   "quota": {
     "requests_per_day": 200,
-    "tokens_per_day": 200000
+    "tokens_per_day": 200000,
+    "requests_per_minute": 60,
+    "burst": 20
   }
 }

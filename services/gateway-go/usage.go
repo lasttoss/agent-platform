@@ -15,9 +15,19 @@ import (
 // see the note in the README before running two gateways against one file.
 
 type usageFile struct {
-	Day    string                    `json:"day"`
-	Users  map[string]map[string]int `json:"users"`
-	SavedAt string                   `json:"saved_at"`
+	Day     string                    `json:"day"`
+	Users   map[string]map[string]int `json:"users"`
+	SavedAt string                    `json:"saved_at"`
+}
+
+// usageBackend is what the server needs from a counter store: load today, save deltas, and keep
+// doing both while the process runs. Two implementations exist: a JSON file for one process, and
+// Postgres for a deployment with replicas.
+type usageBackend interface {
+	load(*Server) (bool, error)
+	save(*Server) error
+	mark()
+	run(*Server, time.Duration)
 }
 
 type usageStore struct {

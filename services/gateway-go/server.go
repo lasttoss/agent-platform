@@ -58,8 +58,12 @@ type Server struct {
 	// Identity arrives as a bearer token in the transport, never as a tool argument.
 	MCP *MCPFront
 
+	// limiter is the per-user token bucket in front of the daily cap. Nil when the policy sets
+	// requests_per_minute to 0.
+	limiter *rateLimiter
+
 	// usageStore persists today's counters so a restart does not hand out a second allowance.
-	usageStore *usageStore
+	usageStore usageBackend
 
 	// Roles is the console's answer to "who is a dev today", layered over policy.json. Nil
 	// means the policy file alone decides, which is the behaviour of every earlier version.
@@ -93,7 +97,8 @@ func uptimeSeconds() float64 { return time.Since(startedAt).Seconds() }
 
 func NewServer(p *Policy, consent map[string]map[string][]string, reg *Registry, auditPath string) *Server {
 	return &Server{Policy: p, Consent: consent, Reg: reg, Cache: NewCache(), Audit: auditPath,
-		usage: map[string]map[string]int{}, sems: map[string]chan struct{}{},
+		limiter: newRateLimiter(p.Quota.RequestsPerMinute, p.Quota.Burst),
+		usage:   map[string]map[string]int{}, sems: map[string]chan struct{}{},
 		jobs: map[string]string{}, dir: map[string]bool{}, dirSource: "policy"}
 }
 
@@ -355,6 +360,14 @@ func scopeFor(pal Principal, tool string, meta map[string]ToolMeta) string {
 
 // Handle is the whole decision path: identity → quota → which tools exist → cache → tool → delivery.
 func (s *Server) Handle(req respondRequest) (int, map[string]any) {
+	// Same bucket as /mcp: a limit that only covers one door is a suggestion.
+	if ok, retry := s.limiter.allow(req.PlatformUserID); !ok {
+		s.audit(map[string]any{"event": "rate_limited", "user": req.PlatformUserID,
+			"retry_after_s": retry, "at": time.Now().UTC().Format(time.RFC3339)})
+		return http.StatusTooManyRequests, map[string]any{
+			"denied": map[string]any{"code": "rate_limited",
+				"reason": fmt.Sprintf("retry in %ds", retry)}, "retry_after_s": retry}
+	}
 	if allowed, code, detail := s.directoryVerdict(req.PlatformUserID); !allowed {
 		s.audit(map[string]any{"user": req.PlatformUserID, "chat": req.ChatType,
 			"decision": "denied", "code": code})

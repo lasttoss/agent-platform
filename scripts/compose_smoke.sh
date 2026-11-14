@@ -117,6 +117,41 @@ bad_args=$(curl -s -X POST "$UI/mcp" -H "Authorization: Bearer dsh-demo-owner-to
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{"q":42}}}')
 expect "a wrong argument type is refused at the gateway" "invalid arguments" "$bad_args"
 
+say "the per-user bucket refuses a burst, and says how long to wait"
+burst=$(python3 - "$UI" <<'PYEOF'
+import json, sys, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+url = sys.argv[1]
+def one(i):
+    body = json.dumps({"jsonrpc":"2.0","id":i,"method":"tools/call",
+                       "params":{"name":"status","arguments":{}}}).encode()
+    req = urllib.request.Request(url + "/mcp", data=body, method="POST",
+        headers={"Content-Type":"application/json","Authorization":"Bearer dsh-demo-owner-token"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return "rate" if "rate limited" in r.read().decode() else "ok"
+    except Exception:
+        return "err"
+with ThreadPoolExecutor(max_workers=25) as ex:
+    out = list(ex.map(one, range(25)))
+print(f"{out.count('ok')} {out.count('rate')}")
+PYEOF
+)
+refused=$(echo "$burst" | cut -d' ' -f2)
+[ "${refused:-0}" -ge 1 ] && ok "burst of 25 → $refused refused by the bucket" \
+  || bad "the bucket did not refuse anything: $burst"
+
+say "quota counters are shared through postgres, and survive a restart"
+used_before=$(curl -s "$GW/v1/whoami?user=1001&chat=dm" | python3 -c "import json,sys;print(json.load(sys.stdin)['quota']['requests_used'])")
+"${COMPOSE[@]}" restart gateway >/dev/null 2>&1
+for _ in $(seq 1 40); do curl -sf "$GW/health" >/dev/null 2>&1 && break; sleep 2; done
+used_after=$(curl -s "$GW/v1/whoami?user=1001&chat=dm" | python3 -c "import json,sys;print(json.load(sys.stdin)['quota']['requests_used'])")
+if [ "${used_after:-0}" -ge "${used_before:-0}" ] && [ "${used_after:-0}" -gt 0 ]; then
+  ok "a restart kept the day's counters ($used_before → $used_after, not reset to zero)"
+else
+  bad "counters did not survive the restart: $used_before → $used_after"
+fi
+
 say "one audit view for every gateway"
 curl -sf "http://127.0.0.1:8096/v1/report?day=$(date +%F)" > /tmp/smoke-report.json \
   && python3 -c "

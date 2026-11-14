@@ -35,6 +35,8 @@ func main() {
 	tokensPath := flag.String("tokens", "../../config/dsh-tokens.json", "MCP client tokens (token → user id)")
 	rolesPath := flag.String("roles", "../../config/roles.json", "role assignments written by the console")
 	usagePath := flag.String("usage", "", "persist today's quota counters here, so a restart does not reset them")
+	usageDSN := flag.String("usage-dsn", os.Getenv("USAGE_DSN"),
+		"Postgres DSN for shared quota counters (wins over -usage); empty keeps the file")
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	audit := flag.String("audit", "state/audit.log", "audit log path")
 	refresh := flag.Duration("refresh", 30*time.Second,
@@ -97,7 +99,20 @@ func main() {
 		os.MkdirAll(dir, 0o755)
 	}
 	srv := NewServer(pol, consent, reg, *audit)
-	if *usagePath != "" {
+	switch {
+	case *usageDSN != "":
+		pg, err := newPgUsage(*usageDSN)
+		if err != nil {
+			log.Fatalf("usage postgres: %v", err)
+		}
+		loaded, err := pg.load(srv)
+		if err != nil {
+			log.Printf("usage: %v (starting from local counters)", err)
+		}
+		srv.usageStore = pg
+		go pg.run(srv, 500*time.Millisecond)
+		fmt.Printf("usage: shared counters in postgres (today loaded: %v)\n", loaded)
+	case *usagePath != "":
 		store := newUsageStore(*usagePath)
 		loaded, err := store.load(srv)
 		if err != nil {
@@ -111,6 +126,12 @@ func main() {
 			fmt.Printf("usage: %s had nothing for today\n", *usagePath)
 		}
 	}
+	go func() {
+		// Idle buckets are removed so the limiter does not grow with everyone who ever called.
+		for range time.Tick(5 * time.Minute) {
+			srv.limiter.sweep(srv.limiter.idle())
+		}
+	}()
 	roles, err := NewRoleStore(*rolesPath)
 	if err != nil {
 		log.Fatalf("roles: %v", err)

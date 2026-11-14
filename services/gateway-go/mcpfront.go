@@ -13,7 +13,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,7 @@ type MCPFront struct {
 	denied      map[string]int
 	quotaDenied int
 	busyDenied  int
+	rateLimited int
 	byTool      map[string]int
 }
 
@@ -63,6 +66,7 @@ func (f *MCPFront) Stats() map[string]any {
 		"cache_hit_rate": rate, "calls": f.byTool, "denied": f.denied,
 		"tokens_active": f.tokens.Count(), "sse_responses": f.sse, "coalesced": f.coalesced,
 		"quota_denied": f.quotaDenied, "busy_denied": f.busyDenied,
+		"rate_limited": f.rateLimited,
 	}
 }
 
@@ -256,6 +260,21 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 				rpcErr(req.ID, -32602, "invalid arguments: "+err.Error(), nil))
 			return
 		}
+	}
+
+	// The bucket comes before the daily cap: it is the part that keeps a burst from turning into
+	// a cliff for everybody else on the same afternoon.
+	if ok, retry := f.srv.limiter.allow(pal.UserID); !ok {
+		f.mu.Lock()
+		f.rateLimited++
+		f.mu.Unlock()
+		f.srv.audit(map[string]any{"event": "mcp_rate_limited", "user": pal.UserID,
+			"role": pal.Role, "tool": params.Name, "retry_after_s": retry,
+			"at": time.Now().UTC().Format(time.RFC3339)})
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		f.emit(w, r, http.StatusOK,
+			rpcErr(req.ID, -32006, fmt.Sprintf("rate limited: retry in %ds", retry), nil))
+		return
 	}
 
 	// The same daily quota as /v1/respond: an MCP client is another way to spend the allowance,

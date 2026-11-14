@@ -19,6 +19,10 @@ import (
 
 // testGateway builds a gateway whose upstream is a real MCP server over HTTP, so the test
 // exercises the same path as production: token → policy → registry → upstream.
+// testRate lets a test turn the token bucket on for the shared fixture; zero means off, which is
+// what every older test expects.
+var testRate struct{ perMinute, burst int }
+
 // testRoleStore lets a test hand the shared fixture a role store; nil in every test that does
 // not care about the console.
 var testRoleStore func(t *testing.T, dir string) *roleStore
@@ -86,8 +90,9 @@ func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, re
                 "3003": {"name":"Dev2","role":"dev","workspace":"d"}},
       "roles": {"owner": {"tools":["*"],"admin":true}, "dev": {"tools":["echo","personal_echo","strict"]}},
       "chats": {"dm": {"tools":["echo","personal_echo","write_thing","strict"], "personal_data": true, "free_chat": true}},
-      "quota": {"requests_per_day": %d, "tokens_per_day": 100000}
-    }`, requestsPerDay))
+      "quota": {"requests_per_day": %d, "tokens_per_day": 100000,
+                "requests_per_minute": %d, "burst": %d}
+    }`, requestsPerDay, testRate.perMinute, testRate.burst))
 	consentPath := write("consent.json", `{}`)
 	metaPath := write("tools.json", fmt.Sprintf(`{
       "echo": {"description":"echo","ttl":600,"max_in_flight":%d},

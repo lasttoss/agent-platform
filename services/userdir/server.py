@@ -108,22 +108,49 @@ class PostgresStore:
                 "Refusing to fall back to a local file, because a disabled user in Postgres must "
                 "disable that user here too.") from exc
         self.psycopg = psycopg
-        self.conn = psycopg.connect(dsn, autocommit=True)
+        self.dsn = dsn
+        self.lock = threading.RLock()
+        self.conn = None
+        self._connect()
+
+    def _connect(self) -> None:
+        self.conn = self.psycopg.connect(self.dsn, autocommit=True)
         with self.conn.cursor() as cur:
             cur.execute(POSTGRES_SCHEMA)
 
+    def _with_cursor(self, fn):
+        """Run fn(cursor), reconnecting once if the connection died.
+
+        A database that restarts must not leave this service permanently broken: the gateway
+        treats an unreachable directory as "policy decides", which silently re-enables people a
+        company disabled in Postgres. Retrying once is the difference between a blip and an
+        outage, and it was a real one — a postgres restart made /health raise until a manual
+        container restart.
+        """
+        with self.lock:
+            for attempt in (1, 2):
+                try:
+                    with self.conn.cursor() as cur:
+                        return fn(cur)
+                except self.psycopg.OperationalError as exc:
+                    if attempt == 2 or "closed" not in str(exc).lower():
+                        raise
+                    self._connect()
+
     def all_users(self) -> list[dict]:
-        with self.conn.cursor() as cur:
+        def query(cur):
             cur.execute("SELECT id, active, role, workspace, updated_at FROM users ORDER BY id")
             return [{"id": r[0], "active": bool(r[1]), "role": r[2], "workspace": r[3],
                      "updated_at": r[4]} for r in cur.fetchall()]
+        return self._with_cursor(query)
 
     def set_active(self, user_id: str, active: bool) -> dict:
-        with self.conn.cursor() as cur:
+        def write(cur):
             cur.execute(
                 "INSERT INTO users(id, active, role, workspace, updated_at) VALUES(%s,%s,%s,%s,%s) "
                 "ON CONFLICT (id) DO UPDATE SET active=EXCLUDED.active, updated_at=EXCLUDED.updated_at",
                 (user_id, active, "dev", "", time.time()))
+        self._with_cursor(write)
         return {"id": user_id, "active": active, "store": self.kind}
 
 

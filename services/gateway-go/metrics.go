@@ -31,6 +31,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 			{"coalesced", "gateway_mcp_calls_coalesced_total", "Requests joined to an in-flight identical call.", "counter"},
 			{"sse_responses", "gateway_mcp_sse_responses_total", "Replies framed as a single SSE event.", "counter"},
 			{"quota_denied", "gateway_mcp_quota_denied_total", "Calls refused by the daily quota.", "counter"},
+			{"rate_limited", "gateway_mcp_rate_limited_total", "Calls refused by the per-user bucket.", "counter"},
 			{"busy_denied", "gateway_mcp_busy_denied_total", "Calls refused because the tool was saturated.", "counter"},
 			{"cache_bypass_no_ttl", "gateway_mcp_cache_bypass_total", "Calls to tools that are never cached.", "counter"},
 			{"tokens_active", "gateway_mcp_tokens_active", "Bearer tokens the file currently accepts.", "gauge"},

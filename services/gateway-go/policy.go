@@ -42,6 +42,10 @@ type RoleConf struct {
 type Quota struct {
 	RequestsPerDay int `json:"requests_per_day"`
 	TokensPerDay   int `json:"tokens_per_day"`
+	// RequestsPerMinute is the token bucket in front of the daily cliff. 0 disables it, which is
+	// the behaviour of every earlier version of this file.
+	RequestsPerMinute int `json:"requests_per_minute"`
+	Burst             int `json:"burst"`
 }
 
 type Principal struct {

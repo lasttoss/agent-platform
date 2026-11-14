@@ -105,3 +105,61 @@ class BindAddressTests(unittest.TestCase):
         sys.modules.pop("server", None)
         mod = importlib.import_module("server")
         self.assertEqual(mod.HOST, "127.0.0.1")
+
+
+def test_postgres_store_reconnects_after_the_database_restarts(monkeypatch):
+    """A postgres restart used to leave /health raising until somebody restarted the container.
+
+    The gateway reads an unreachable directory as "policy decides", which silently re-enables
+    people who were disabled in Postgres — so this is a security-relevant retry, not just tidiness.
+    """
+    import server as userdir
+
+    class FakeCursor:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *_a, **_k):
+            if self.conn.dead:
+                raise FakeOperationalError("the connection is closed")
+
+        def fetchall(self):
+            return [("1001", True, "owner", "d", 0.0)]
+
+    class FakeConn:
+        def __init__(self, dead=False):
+            self.dead = dead
+
+        def cursor(self):
+            return FakeCursor(self)
+
+    class FakePsycopg:
+        OperationalError = FakeOperationalError
+
+        def __init__(self):
+            self.connects = 0
+
+        def connect(self, dsn, autocommit=True):
+            self.connects += 1
+            return FakeConn(dead=self.connects == 1)  # the first connection is already dead
+
+    class FakeOperationalError(Exception):
+        pass
+
+    fake = FakePsycopg()
+    store = object.__new__(userdir.PostgresStore)
+    store.kind = "postgres"
+    store.psycopg = fake
+    store.dsn = "postgresql://example/db"
+    store.lock = __import__("threading").RLock()
+    store.conn = FakeConn(dead=True)
+
+    users = store.all_users()
+    assert fake.connects == 1, "a closed connection must be replaced, once"
+    assert users and users[0]["id"] == "1001"

@@ -23,6 +23,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-agent}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # 5433 on the host: the container port stays 5432, and a developer's own Postgres usually
+    # owns 5432 already.
+    ports: ["5433:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-agent}"]
       interval: 3s
@@ -149,7 +152,9 @@ services:
       - -audit=/state/audit.jsonl
       - -tokens=/tokens.json
       - -roles=/roles/roles.json
-      - -usage=/state/usage.json
+      # Shared counters: two replicas add up instead of each handing out the full allowance.
+      # The file store stays available (-usage) for a single-process run.
+      - -usage-dsn=postgresql://postgres:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-agent}?sslmode=disable
       - -refresh=30s
     environment:
       AUDIT_SINK_URL: http://audit-sink:8096/v1/audit
@@ -173,6 +178,8 @@ services:
       timeout: 3s
       retries: 20
     depends_on:
+      postgres:
+        condition: service_healthy
       mcp-demo:
         condition: service_healthy
       userdir:

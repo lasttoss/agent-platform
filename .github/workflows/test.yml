@@ -35,10 +35,26 @@ jobs:
         run: python3 services/ocr/samples/make_samples.py
 
       - name: Tests (python + go)
-        run: make test
+        run: make test 2>&1 | tee -a /tmp/ci.log
 
       - name: Parity — the same policy, two implementations
-        run: make parity
+        run: make parity 2>&1 | tee -a /tmp/ci.log
+
+      # When a red run cannot be read from the UI, publish the log where a developer can fetch
+      # it with git. Deliberately on a throwaway branch, never on main.
+      - name: Publish the log on failure
+        if: failure()
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.email "ci@example.invalid"
+          git config user.name "ci"
+          mkdir -p ci-logs
+          cp /tmp/ci.log "ci-logs/${GITHUB_SHA:0:7}.log" 2>/dev/null || echo "no log captured" > "ci-logs/${GITHUB_SHA:0:7}.log"
+          git checkout -B ci-logs
+          git add ci-logs
+          git commit -m "ci log for ${GITHUB_SHA:0:7}" || true
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs
 
   # The console is a second build system in the same repository, so it gets its own job: a
   # broken TypeScript build must fail the pull request, not the first deploy.

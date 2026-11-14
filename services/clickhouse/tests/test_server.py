@@ -5,6 +5,7 @@ shape, headers, error extraction, and the decision not to run anything a guard r
 """
 import json
 import pathlib
+import time
 import sys
 import threading
 import unittest
@@ -39,7 +40,13 @@ class FakeClickHouse:
                     self.end_headers()
                     self.wfile.write(raw)
                     return
-                if "system.columns" in body:
+                if "type LIKE 'AggregateFunction(%" in body:
+                    doc = {"data": [{"name": "events", "type": "AggregateFunction(count)"},
+                                    {"name": "total_ms", "type": "AggregateFunction(sum, UInt32)"}]}
+                elif body.strip().startswith("EXPLAIN ESTIMATE"):
+                    doc = {"data": [{"database": "analytics", "table": "events",
+                                     "parts": 4, "rows": 1000, "marks": 10}]}
+                elif "system.columns" in body:
                     doc = {"data": [
                         {"table": "events", "name": "ts", "type": "DateTime"},
                         {"table": "events", "name": "player_id", "type": "UInt32"},
@@ -82,6 +89,7 @@ class FakeModel:
 
     def __init__(self, content="", mock=False):
         self.content, self.mock, self.calls = content, mock, []
+        self.queue = content if isinstance(content, list) else None
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -89,7 +97,10 @@ class FakeModel:
                 size = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(size) or b"{}")
                 outer.calls.append(body)
-                inner = json.dumps({"content": outer.content, "tool_calls": [],
+                content = outer.content
+                if outer.queue:
+                    content = outer.queue[min(len(outer.calls) - 1, len(outer.queue) - 1)]
+                inner = json.dumps({"content": content, "tool_calls": [],
                                     "mock": outer.mock,
                                     "usage": {"prompt_tokens": 0, "completion_tokens": 0}})
                 raw = json.dumps({"jsonrpc": "2.0", "id": body.get("id"),
@@ -222,6 +233,125 @@ class ServiceTest(unittest.TestCase):
         out = server.ask({"question": "anything"})
         self.assertTrue(out["is_error"])
         self.assertIn("model_unavailable", out["error"])
+
+
+class ParamsTest(unittest.TestCase):
+    """`{name:Type}` values travel as query parameters, never as part of the SQL text."""
+
+    def setUp(self):
+        self.ch = FakeClickHouse()
+        self._saved = server.CH_URL
+        server.CH_URL = self.ch.url
+        # Warm the combinator map, so these tests record only the caller's own SQL.
+        server._STATE_CACHE.update({"at": time.time(), "map": {"events": "countMerge"}})
+
+    def tearDown(self):
+        server.CH_URL = self._saved
+        server._STATE_CACHE.update({"at": 0.0, "map": {}})
+        self.ch.httpd.shutdown()
+
+    def test_values_are_sent_as_parameters_not_spliced_into_the_sql(self):
+        out = server.run_sql("SELECT count() FROM events WHERE event = {ev:String}",
+                             params={"ev": "level_fail"})
+        self.assertFalse(out.get("is_error"), out)
+        self.assertNotIn("level_fail", self.ch.queries[-1])
+        self.assertEqual(self.ch.params[-1].get("param_ev"), ["level_fail"])
+
+    def test_a_value_that_looks_like_sql_stays_a_value(self):
+        hostile = "x'; DROP TABLE events; --"
+        out = server.run_sql("SELECT {v:String} AS echoed", params={"v": hostile})
+        self.assertFalse(out.get("is_error"), out)
+        self.assertEqual(self.ch.params[-1].get("param_v"), [hostile])
+
+    def test_a_missing_parameter_is_named_before_the_query_is_sent(self):
+        out = server.run_sql("SELECT count() FROM events WHERE event = {ev:String}")
+        self.assertIn("missing param ev", out.get("error", ""))
+        self.assertEqual(self.ch.queries, [])
+
+    def test_an_unknown_parameter_is_refused(self):
+        out = server.run_sql("SELECT count() FROM events WHERE event = {ev:String}",
+                             params={"ev": "a", "extra": "b"})
+        self.assertIn("unknown param extra", out.get("error", ""))
+
+
+class LintTest(unittest.TestCase):
+    """A combinator reads a state; wrapping it in an aggregate is refused with the fix."""
+
+    def setUp(self):
+        self.ch = FakeClickHouse()
+        self._saved = server.CH_URL
+        server.CH_URL = self.ch.url
+        server._STATE_CACHE.update({"at": 0.0, "map": {}})
+
+    def tearDown(self):
+        server.CH_URL = self._saved
+        server._STATE_CACHE.update({"at": 0.0, "map": {}})
+        self.ch.httpd.shutdown()
+
+    def test_aggregate_over_a_state_is_refused_locally(self):
+        out = server.run_sql("SELECT sum(countMerge(events)) FROM events_daily")
+        self.assertIn("aggregate over an aggregate state", out.get("error", ""))
+        self.assertIn("countMerge(events)", out.get("error", ""))
+        self.assertEqual(self.ch.queries, [])  # nothing reached the database
+
+    def test_the_right_combinator_on_the_wrong_state_is_refused_with_the_fix(self):
+        """`sumMerge(events)` on a count state is what ClickHouse reports as "sum requires single
+        argument"; the column types come from the database, so the refusal can name the fix."""
+        out = server.run_sql("SELECT sumMerge(events) FROM events_daily")
+        self.assertIn("wrong combinator", out.get("error", ""))
+        self.assertIn("countMerge(events)", out.get("error", ""))
+        self.assertFalse(any("sumMerge" in q for q in self.ch.queries))
+
+    def test_the_right_combinator_passes(self):
+        out = server.run_sql("SELECT countMerge(events) FROM events_daily")
+        self.assertFalse(out.get("is_error"), out)
+
+    def test_merge_on_its_own_is_allowed(self):
+        out = server.run_sql("SELECT countMerge(events) FROM events_daily")
+        self.assertFalse(out.get("is_error"), out)
+
+    def test_explain_estimate_reports_the_scan_without_running_it(self):
+        out = server.explain("SELECT event FROM events GROUP BY event")
+        self.assertFalse(out.get("is_error"), out)
+        self.assertIn("EXPLAIN ESTIMATE", self.ch.queries[-1])
+        self.assertEqual(out["rows_expected"], 1000)
+        self.assertEqual(out["estimate"][0]["table"], "events")
+
+
+class RepairTest(unittest.TestCase):
+    """One rejected query earns exactly one corrected attempt, then it is an error."""
+
+    def setUp(self):
+        self.ch = FakeClickHouse()
+        self._saved_ch = server.CH_URL
+        server.CH_URL = self.ch.url
+        self.model = FakeModel(content=[
+            "SELECT sum(countMerge(events)) FROM events_daily",
+            "SELECT countMerge(events) FROM events_daily",
+        ])
+        self._saved_model = server.MODEL_MCP_URL
+        server.MODEL_MCP_URL = self.model.url
+
+    def tearDown(self):
+        server.CH_URL = self._saved_ch
+        server.MODEL_MCP_URL = self._saved_model
+        self.model.close()
+        self.ch.httpd.shutdown()
+
+    def test_the_second_attempt_is_the_one_that_runs(self):
+        out = server.ask({"question": "how many events"})
+        self.assertFalse(out.get("is_error"), out)
+        self.assertTrue(out.get("repaired"))
+        self.assertIn("sum(countMerge", out.get("rejected_sql", ""))
+        self.assertEqual(len(self.model.calls), 2)
+        self.assertIn("rejected by the validator", self.model.calls[1]["params"]["arguments"]["user"])
+
+    def test_a_model_that_repeats_itself_ends_as_an_error_not_a_loop(self):
+        self.model.queue = ["SELECT sum(countMerge(events)) FROM events_daily"]
+        out = server.ask({"question": "how many events"})
+        self.assertTrue(out.get("is_error"))
+        self.assertIn("aggregate over an aggregate state", out.get("error", ""))
+        self.assertEqual(len(self.model.calls), 2)  # two, not three
 
 
 if __name__ == "__main__":

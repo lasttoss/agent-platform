@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -45,7 +46,27 @@ QUERY = {
         "properties": {
             "sql": {"type": "string", "description": "A single SELECT (or WITH … SELECT). No mutations."},
             "limit": {"type": "integer", "description": f"Row cap for this query (default {DEFAULT_LIMIT}, max 1000)."},
+            "params": {
+                "type": "object",
+                "description": ("Values for `{name:Type}` placeholders in the SQL, e.g. "
+                                "{\"day\": \"2026-11-13\"}. Sent as ClickHouse query parameters, so the "
+                                "value never becomes part of the query text."),
+                "additionalProperties": {"type": ["string", "number", "boolean"]},
+            },
         },
+        "required": ["sql"],
+        "additionalProperties": False,
+    },
+}
+
+EXPLAIN = {
+    "name": "ch_explain",
+    "description": ("Estimate a query before running it: rows, parts and marks ClickHouse expects "
+                    "to read. Use it to notice a full scan of the raw table when the aggregate "
+                    "materialized view would answer the same question."),
+    "inputSchema": {
+        "type": "object",
+        "properties": {"sql": {"type": "string", "description": "The SELECT to estimate. Not executed."}},
         "required": ["sql"],
         "additionalProperties": False,
     },
@@ -76,7 +97,7 @@ ASK = {
     },
 }
 
-TOOLS = [QUERY, SCHEMA, ASK]
+TOOLS = [QUERY, EXPLAIN, SCHEMA, ASK]
 SCHEMA_PROMPT = """You translate a question into ClickHouse SQL.
 
 Rules, all mandatory:
@@ -196,21 +217,63 @@ def _mv_target(ddl: str) -> str:
     return rest.split(".")[-1].strip("`")
 
 
-def run_sql(sql: str, limit: int = DEFAULT_LIMIT, timeout: float | None = None) -> dict:
+MAX_PARAMS = 20
+
+
+def binding(sql: str, params: dict | None) -> tuple[dict[str, str], str]:
+    """Turn `{name:Type}` placeholders into ClickHouse query parameters.
+
+    Values travel as parameters, never spliced into the text: a value is data even when it contains
+    a quote, a semicolon or the word DROP. Returns (params to send, why-not).
+    """
+    wanted = sqlguard.placeholders(sql)
+    given = params or {}
+    if not isinstance(given, dict):
+        return {}, "params must be an object"
+    if len(given) > MAX_PARAMS:
+        return {}, f"too many params (limit {MAX_PARAMS})"
+    for name, value in given.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)):
+            return {}, f"bad param name: {str(name)[:40]}"
+        if isinstance(value, (dict, list)) or value is None:
+            return {}, f"param {name} must be a string, number or boolean"
+        if len(str(value)) > 4000:
+            return {}, f"param {name} is longer than 4000 characters"
+        if wanted and name not in wanted:
+            return {}, f"unknown param {name}; the sql declares {', '.join(wanted)}"
+    missing = [n for n in wanted if n not in given]
+    if missing:
+        return {}, "missing param " + ", ".join(missing)
+    return {f"param_{k}": str(v) for k, v in given.items()}, ""
+
+
+def run_sql(sql: str, limit: int = DEFAULT_LIMIT, timeout: float | None = None,
+            params: dict | None = None) -> dict:
     """Validate, then run. Never called with text that has not passed `sqlguard`."""
     verdict = sqlguard.check_readonly(sql)
     if not verdict.ok:
         return {"is_error": True, "error": "sql_rejected: " + verdict.reason, "sql": (sql or "")[:400]}
+    semantics = sqlguard.check_semantics(verdict.sql)
+    if not semantics.ok:
+        return {"is_error": True, "error": "sql_rejected: " + semantics.reason,
+                "sql": (sql or "")[:400]}
+    combinators = sqlguard.check_combinators(verdict.sql, state_columns())
+    if not combinators.ok:
+        return {"is_error": True, "error": "sql_rejected: " + combinators.reason,
+                "sql": (sql or "")[:400]}
+    send, why = binding(verdict.sql, params)
+    if why:
+        return {"is_error": True, "error": "bad_params: " + why, "sql": (sql or "")[:400]}
     cap = max(1, min(int(limit or DEFAULT_LIMIT), 1000))
     started = time.time()
     try:
-        raw = _ch(verdict.sql, {
+        raw = _ch(verdict.sql, dict(send, **{
             "database": CH_DATABASE,
             "max_execution_time": str(int(timeout or CH_TIMEOUT)),
             "max_result_rows": str(cap),
             "result_overflow_mode": "break",
             "default_format": "JSON",
-        }, (timeout or CH_TIMEOUT) + 5)
+        }), (timeout or CH_TIMEOUT) + 5)
     except Exception as exc:  # a database failure is reported with its own words
         return {"is_error": True, "error": "clickhouse: " + _ch_error(exc),
                 "sql": verdict.sql, "ms": int((time.time() - started) * 1000)}
@@ -221,7 +284,56 @@ def run_sql(sql: str, limit: int = DEFAULT_LIMIT, timeout: float | None = None) 
             "truncated": len(rows) >= cap, "ms": int((time.time() - started) * 1000)}
 
 
-def _model_sql(question: str) -> tuple[str, str]:
+_STATE_CACHE: dict[str, object] = {"at": 0.0, "map": {}}
+STATE_TTL_S = 60.0
+
+
+def state_columns() -> dict[str, str]:
+    """Which combinator each aggregate column needs, read from the database, cached for a minute.
+
+    Cheap (one query), and it makes the difference between "Aggregate function sum requires single
+    argument" and "sumMerge(events) … use countMerge(events)". A database that is down returns the
+    cached map, or {} — an empty map means the check is skipped, never that the query is refused.
+    """
+    now = time.time()
+    if _STATE_CACHE["map"] and now - float(_STATE_CACHE["at"]) < STATE_TTL_S:
+        return dict(_STATE_CACHE["map"])
+    try:
+        raw = _ch("SELECT name, type FROM system.columns WHERE database = currentDatabase() "
+                  "AND type LIKE 'AggregateFunction(%' FORMAT JSON",
+                  {"database": CH_DATABASE, "max_execution_time": "5"}, 10)
+    except Exception:
+        return dict(_STATE_CACHE["map"])  # type: ignore[arg-type]
+    mapping: dict[str, str] = {}
+    for row in json.loads(raw or "{}").get("data") or []:
+        fn = str(row.get("type", ""))[len("AggregateFunction("):].rstrip(")").split(",")[0].strip()
+        if fn:
+            mapping[str(row["name"])] = fn + "Merge"
+    _STATE_CACHE.update({"at": now, "map": mapping})
+    return mapping
+
+
+def explain(sql: str, timeout: float | None = None) -> dict:
+    """`EXPLAIN ESTIMATE` runs no query: it reports what the planner expects to read."""
+    verdict = sqlguard.check_readonly(sql)
+    if not verdict.ok:
+        return {"is_error": True, "error": "sql_rejected: " + verdict.reason, "sql": (sql or "")[:400]}
+    started = time.time()
+    try:
+        raw = _ch("EXPLAIN ESTIMATE " + verdict.sql, {
+            "database": CH_DATABASE,
+            "max_execution_time": str(int(timeout or CH_TIMEOUT)),
+            "default_format": "JSON",
+        }, (timeout or CH_TIMEOUT) + 5)
+    except Exception as exc:
+        return {"is_error": True, "error": "clickhouse: " + _ch_error(exc), "sql": verdict.sql[:400]}
+    rows = (json.loads(raw or "{}").get("data") or [])
+    total = sum(int(r.get("rows") or 0) for r in rows)
+    return {"is_error": False, "sql": verdict.sql, "estimate": rows,
+            "rows_expected": total, "ms": int((time.time() - started) * 1000)}
+
+
+def _model_sql(question: str, repair: str = "") -> tuple[str, str, dict]:
     """Ask the model service for one SELECT. Returns (sql, why-not) — exactly one is non-empty.
 
     The model service is an MCP service like any other, so this is a `tools/call`, not an SDK.
@@ -231,43 +343,67 @@ def _model_sql(question: str) -> tuple[str, str]:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": "chat_complete", "arguments": {
                            "system": SCHEMA_PROMPT.format(schema=schema_text()),
-                           "user": question[:2000]}}}).encode()
+                           "user": (question if not repair else repair)[:4000]}}}).encode()
     req = urllib.request.Request(MODEL_MCP_URL, data=body,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             doc = json.loads(resp.read().decode())
     except Exception as exc:
-        return "", "model_unavailable: " + str(exc)[:200]
+        return "", "model_unavailable: " + str(exc)[:200], {}
     result = (doc.get("result") or {})
     if result.get("isError"):
         text = (result.get("content") or [{}])[0].get("text", "")
-        return "", "model_error: " + text[:200]
+        return "", "model_error: " + text[:200], {}
     try:
         inner = json.loads((result.get("content") or [{}])[0].get("text") or "{}")
     except json.JSONDecodeError:
-        return "", "model_error: unreadable completion"
+        return "", "model_error: unreadable completion", {}
+    usage = inner.get("usage") or {}
     content = (inner.get("content") or "").strip()
     if inner.get("mock"):
-        return "", "model_returned_no_sql: the model service is unconfigured (MODEL_BASE_URL)"
+        return "", "model_returned_no_sql: the model service is unconfigured (MODEL_BASE_URL)", usage
     if not content:
-        return "", "model_returned_no_sql"
+        return "", "model_returned_no_sql", usage
     if content.strip().rstrip(";").upper() == "NONE":
-        return "", "no_table_can_answer_this: the model found no table for the question"
+        return "", "no_table_can_answer_this: the model found no table for the question", usage
     # Strip fences a model likes to add, then take the first statement only.
     cleaned = content.replace("```sql", "```").split("```")
     sql = max(cleaned, key=len).strip() if "```" in content else content
-    return sql.split(";")[0].strip() + (";" if sql.rstrip().endswith(";") else ""), ""
+    return sql.split(";")[0].strip() + (";" if sql.rstrip().endswith(";") else ""), "", usage
 
 
 def ask(args: dict) -> dict:
     question = str(args.get("question") or "").strip()
     if not question:
         return {"is_error": True, "error": "question is required"}
-    sql, why = _model_sql(question)
+    sql, why, usage = _model_sql(question)
     if why:
         return {"is_error": True, "error": why}
     out = run_sql(sql, args.get("limit") or DEFAULT_LIMIT)
+    out["model_usage"] = usage  # what the call cost, as reported by the provider
+    err = str(out.get("error", ""))
+    if out.get("is_error") and (err.startswith("sql_rejected")
+                                or "Code: 184" in err or "Code: 42." in err):
+        # One repair round: a rejection says what was wrong with the SQL, so give the model that
+        # sentence plus its own query and ask again. Exactly one, so a model that keeps insisting
+        # ends as an error instead of a loop that spends money.
+        retry, why2, usage2 = _model_sql(question, repair=(
+            f"Question: {question}\nYour previous SQL was rejected by the validator: "
+            f"{out.get('error', '')}\nThe SQL was: {sql}\nReturn one corrected SELECT."))
+        if why2:
+            out["question"] = question
+            return out
+        again = run_sql(retry, args.get("limit") or DEFAULT_LIMIT)
+        again["question"] = question
+        again["model_usage"] = {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0) + int(usage2.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0) + int(usage2.get("completion_tokens") or 0),
+        }
+        if not again.get("is_error"):
+            again["repaired"] = True
+            again["rejected_sql"] = sql
+        return again
     out["question"] = question
     return out
 
@@ -291,7 +427,10 @@ def handle(body: dict) -> dict:
         name, args = params.get("name"), (params.get("arguments") or {})
         try:
             if name == "ch_query":
-                out = run_sql(args.get("sql", ""), args.get("limit") or DEFAULT_LIMIT)
+                out = run_sql(args.get("sql", ""), args.get("limit") or DEFAULT_LIMIT,
+                              params=args.get("params"))
+            elif name == "ch_explain":
+                out = explain(args.get("sql", ""))
             elif name == "ch_schema":
                 out = {"is_error": False, "schema": schema_text(args.get("table", ""))}
             elif name == "nlp_ask":

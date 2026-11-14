@@ -81,9 +81,11 @@ curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
 
 ## ClickHouse service
 
-`services/clickhouse/` answers three tools: `ch_schema` (tables), `ch_query` (one read-only
-SELECT, owner only) and `nlp_ask` (a question in words → one SELECT from the model service →
-checked → run, with the SQL returned next to the rows). Every query travels through `sqlguard.py`
+`services/clickhouse/` answers four tools: `ch_schema` (tables, engines, combinator per aggregate
+column), `ch_explain` (`EXPLAIN ESTIMATE`, nothing runs), `ch_query` (one read-only SELECT with
+`{name:Type}` parameters, owner only) and `nlp_ask` (a question in words → one SELECT from the
+model service → checked → run, with the SQL returned next to the rows and one repair round when
+the SQL is refused). Every query travels through `sqlguard.py`
 and then through a ClickHouse user that may only read. See `services/clickhouse/README.md`.
 
 `nlp_ask` needs a model: point the model service at any OpenAI-compatible endpoint (the guard and

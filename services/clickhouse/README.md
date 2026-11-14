@@ -1,12 +1,13 @@
 # ClickHouse, behind MCP, with a question in front of it
 
-Three tools:
+Four tools:
 
 | tool | who may call it | what it does |
 |---|---|---|
-| `ch_schema` | dev, owner | tables and columns in the configured database |
-| `ch_query` | owner only | one read-only `SELECT`, rows as JSON, plus the SQL used |
-| `nlp_ask` | dev, owner | a question in words → one `SELECT` from the model service → checked → run |
+| `ch_schema` | dev, owner | tables, engines, which view feeds which table, and the combinator each aggregate column needs |
+| `ch_explain` | dev, owner | `EXPLAIN ESTIMATE`: the rows and parts a query would read, without running it |
+| `ch_query` | owner only | one read-only `SELECT` with optional `{name:Type}` parameters, rows as JSON, plus the SQL used |
+| `nlp_ask` | dev, owner | a question in words → one `SELECT` from the model service → checked → run, with one repair round |
 
 Raw SQL is an owner capability on purpose: everybody else asks in words, and the words go through
 the same guard the owner's SQL does.
@@ -17,6 +18,11 @@ the same guard the owner's SQL does.
    DDL keywords, no `INTO OUTFILE`, no `FORMAT`, no `SETTINGS`, no `system.`/`information_schema.`/
    `default.`. The keyword check reads a copy with string literals blanked, so `SELECT 'DROP TABLE'`
    is data and `SELECT 1 -- x` + `; DROP TABLE events` is still two statements.
+   On top of the text rules, two semantic checks refuse SQL that is well-formed and still cannot be
+   right: an aggregate over an aggregate state (`sum(countMerge(events))`), and the right combinator
+   on the wrong state (`sumMerge(events)` where `events` is a count state — the column types come
+   from the database, cached for a minute, and the refusal names the combinator to use instead).
+   Both refusals are what earns `nlp_ask` its single repair round.
 2. **The database user** — `app_readonly`, created in `deploy/compose/clickhouse/init.sql` with
    `SETTINGS readonly = 2` and `GRANT SELECT ON analytics.*`. This is the real boundary, measured:
 
@@ -97,33 +103,52 @@ single argument"* — measured, and a confusing way to learn that the column is 
 
 ### Two writers, same schema, same database
 
-`scripts/bench_nlp_mv.py`: 7 questions (all requiring `-Merge` combinators), 3 runs per cell,
-**raw trimmed to 1.4M rows while the view still holds 5M**, DeepSeek V4.1 Flash for both,
-so the only difference is who calls the model.
+`scripts/bench_nlp_mv.py` with `gen50.py`-style generated cases: **50 questions**, questions and
+ground truth written by the same template (the model never sees the truth), 5M raw rows over 7
+days, an 84-row view, DeepSeek V4.1 Flash for both, each writer measured in its own sequential
+pass so a provider hiccup does not silently become an accuracy number.
 
 ```
-writer          correct      median    p90    used the aggregated table
-our nlp_ask     20/21 (95%)  2536 ms   3899 ms   20/21
-ClickHouse      17/21 (80%)  2047 ms   3217 ms   21/21
-  aiGenerate
-```
-- **Accuracy** is the same order; the misses were both writers producing an aggregate of an
-  aggregate (`sum(countMerge(events))`) that ClickHouse rejects — a model mistake, not a path
-  mistake. The sample is 7 questions: this is a smoke-sized benchmark, not a claim about quality.
-- **Latency** is dominated by the model call (1.5–5 s), not by the hop: in-database is ~20 %
-  faster in this sample and that is inside the noise of a network model.
-- **Both** now use the materialized view, which is the point: the fix that mattered was the schema
-  text, not the caller.
-
-Cost of reading the raw table instead, measured on 46.4M rows:
-
-```
-SELECT event, avg(duration_ms) FROM events GROUP BY event        → 46.4M rows · 43–50 ms
-SELECT event, avgMerge(avg_ms) FROM events_daily GROUP BY event   →        192 rows · 1.7–2.3 ms
+writer                correct   median    p90    first-attempt repairs
+nlp_ask (this service) 49/50    2506 ms  6379 ms   15
+ClickHouse aiGenerate  37/50    2259 ms  3483 ms    0
 ```
 
-At 46.4M rows the wall-clock gap is ~22x; the row gap is ~240000x. Small data hides this, which is
-why the benchmark trims the raw table instead of trusting speed alone.
+- **Every one of the 13 in-database misses was the same mistake**: `sum(countMerge(events))` — an
+  aggregate over an aggregate state. This service refuses that text locally, tells the model which
+  combinator to use, and retries once: 15 of the 50 questions needed that repair, and 14 of them
+  came back correct. A path that can only forward the error to the user has no way to recover.
+- The single service miss was an empty completion (`model_unavailable: timed out`), not a wrong
+  answer — worth keeping in the number, because a benchmark that hides provider failures
+  understates how often the answer is missing.
+- **Latency is the model, not the path**: both sit at ~2.3–2.5 s median. The in-database p90 is
+  better here (3.5 s vs 6.4 s) because a repair round is a second call.
+- **Tokens, service only**, as the provider reported them: 473 prompt / 191 completion per
+  question on a 20-question sample. ClickHouse does not expose usage per `aiGenerate` call, so the
+  in-database path's token cost is **not measured** — not "cheaper", unknown.
+- Measured one writer after the other. An interleaved pass (both writers per question) produced
+  empty completions from the provider and a fake 17/50 for this service; the speed of a benchmark
+  can change its answer, which is why the passes are separate.
+
+### Why the view exists, before trimming anything
+
+Same question ("events per day"), raw 5M rows vs the 84-row view: `read_rows` 5,000,000 against
+84. At 46.4M rows the wall clock separates as well: 43–50 ms against 1.7–2.3 ms.
+
+Point is not "the view is faster". The point is that the raw table may be **trimmed** —
+`ALTER TABLE … DELETE WHERE ts < …` is what a retention policy does — and then only the view
+still knows the history. That state is where a model's table choice stops being a speed
+difference and starts being a wrong answer:
+
+```
+SELECT sum(duration_ms) FROM events        → 21.06 billion   (truth 75.24 billion)
+SELECT count() FROM events                 → 1,400,000       (truth 5,000,000)
+SELECT avg(duration_ms) … WHERE platform=… → 60198.66        (truth 60194.30)
+```
+
+Both writers made those mistakes until `ch_schema` described the engines, each view's target and
+the combinator per column. After that, both read the view: the fix that mattered was the schema
+text, not who calls the model.
 
 ## Limits, stated
 

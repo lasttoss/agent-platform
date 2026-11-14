@@ -35,6 +35,21 @@ FORBIDDEN_PHRASES = (
 FORBIDDEN_PREFIXES = ("system.", "information_schema.", "default.")
 
 
+# A combinator reads an aggregate *state*; wrapping it in an aggregate reads a column that is not
+# there. ClickHouse answers `sum(countMerge(events))` with "Aggregate function sum requires single
+# argument", which reads like a syntax problem and is really a schema misunderstanding — so it is
+# refused here, with the fix in the message.
+STATE_FUNCTIONS = ("count", "sum", "avg", "min", "max", "any", "anyLast", "uniq", "uniqExact",
+                   "argMin", "argMax", "median", "quantile")
+WRAPPED_STATE = re.compile(
+    r"\b(" + "|".join(STATE_FUNCTIONS) + r")\s*\(\s*"
+    r"(count|sum|avg|min|max|any|anyLast|uniq|uniqExact|argMin|argMax|median|quantile)"
+    r"(Merge|MergeState|State)\s*\(",
+    re.IGNORECASE,
+)
+PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^{}]{1,64})\}")
+
+
 class Verdict(NamedTuple):
     ok: bool
     reason: str
@@ -144,3 +159,54 @@ def check_readonly(sql: str) -> Verdict:
         if re.search(rf"\b{re.escape(phrase)}\b", words):
             return Verdict(False, f"refused construct: {phrase}", "")
     return Verdict(True, "", cleaned)
+
+
+def check_semantics(sql: str) -> Verdict:
+    """Refuse SQL that is well-formed and still cannot be right.
+
+    Only rules that are mechanical are here: a combinator wrapped in an aggregate, and a `{name:Type}`
+    placeholder nobody filled. Anything that needs the schema — a Merge call on a plain column — is
+    left to ClickHouse, which at least names the column.
+    """
+    flat = _unquoted(sql)
+    hit = WRAPPED_STATE.search(flat)
+    if hit:
+        outer, inner, kind = hit.group(1), hit.group(2), hit.group(3)
+        column = flat[hit.end():].split(")")[0].strip() or "column"
+        better = f"{inner}{'Merge' if kind != 'State' else ''}({column})"
+        return Verdict(False,
+                       f"aggregate over an aggregate state: {outer}({inner}{kind}({column})) — "
+                       f"the state is already an aggregate, so use {better} alone", "")
+    return Verdict(True, "", sql)
+
+
+COMBINATOR_CALL = re.compile(r"\b([A-Za-z][A-Za-z0-9]*)Merge\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)")
+
+
+def check_combinators(sql: str, expected: dict[str, str]) -> Verdict:
+    """Refuse the right combinator on the wrong state.
+
+    `sumMerge(events)` where `events` is a count state is a schema misunderstanding, and ClickHouse
+    reports it as "Aggregate function sum requires single argument" — a message that sends the
+    reader looking for a syntax problem. `expected` maps an aggregate column to the combinator its
+    state type needs, read from the database itself, so the refusal can name the fix.
+    """
+    if not expected:
+        return Verdict(True, "", sql)
+    for used, column in COMBINATOR_CALL.findall(_unquoted(sql)):
+        want = expected.get(column)
+        if want and want.lower() != (used + "Merge").lower():
+            return Verdict(False,
+                           f"wrong combinator: {used}Merge({column}) but {column} is a "
+                           f"{want[: -len('Merge')]} state, so use {want}({column})", "")
+    return Verdict(True, "", sql)
+
+
+def placeholders(sql: str) -> list[str]:
+    """The `{name:Type}` parameters a query declares, in order, without repeats."""
+    seen, out = set(), []
+    for name, _typ in PLACEHOLDER.findall(_unquoted(sql)):
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out

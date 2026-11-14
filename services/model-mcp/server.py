@@ -47,7 +47,10 @@ def complete(args: dict) -> dict:
         return {"content": "", "tool_calls": [], "mock": True,
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
 
-    body = {"model": os.environ.get("MODEL_NAME", "gpt-4o-mini"), "temperature": 0.2,
+    # A caller may name the model (the gateway's OpenAI-shaped endpoint checks its whitelist
+    # first); otherwise the deployment's configured model is the only one on offer.
+    body = {"model": str(args.get("model") or os.environ.get("MODEL_NAME", "gpt-4o-mini")),
+            "temperature": 0.2,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}]}
     if tools:

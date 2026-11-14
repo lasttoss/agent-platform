@@ -218,6 +218,18 @@ if printf '%s' "$DEV_TOOLS" | grep -q ch_schema && ! printf '%s' "$DEV_TOOLS" | 
 else
   bad "role separation for ClickHouse tools is wrong: $DEV_TOOLS"
 fi
+say "the OpenAI-shaped model door"
+models=$(curl -s "$GW/v1/models" -H "Authorization: Bearer $OWNER_TOKEN")
+expect "the model list is the whitelist" '"id":"gpt-4.1' "$models"
+code=$(curl -s -o /tmp/oa-denied.json -w '%{http_code}' "$GW/v1/chat/completions" \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model":"not-in-the-whitelist","messages":[{"role":"user","content":"hi"}]}')
+expect "a model outside the whitelist is refused" "404" "$code"
+expect "the refusal names the reason" "model_not_found" "$(cat /tmp/oa-denied.json)"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$GW/v1/chat/completions" \
+  -H 'Content-Type: application/json' -d '{"model":"gpt-4.1-mini","messages":[]}')
+expect "no token is not a user" "401" "$code"
+
 say "one audit view for every gateway"
 curl -sf "http://127.0.0.1:8096/v1/report?day=$(date +%F)" > /tmp/smoke-report.json \
   && python3 -c "

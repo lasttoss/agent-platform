@@ -7,17 +7,56 @@ exactly as the gateway intends — filtered by the caller's role before the mode
 
 ## Run it
 
+One credential. Both doors — the model and the tools — take the same platform token:
+
 ```bash
-# token: the KEY in config/dsh-tokens.json ("dsh-demo-owner-token" → user 1001).
-# Not the value "1001": that is the user id, and passing it yields a 401.
-export PLATFORM_TOKEN=dsh-demo-owner-token
-export OPENAI_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint
-export OPENAI_API_KEY=...                          # read per request, never from a file
-export OPENAI_MODEL=gpt-4.1-mini                   # a model that endpoint serves
+# The token is the KEY in config/dsh-tokens.json ("dsh-demo-owner-token" → user 1001), not the
+# user id "1001": passing the id yields a 401 with no hint why.
+TOKEN=dsh-demo-owner-token
+export PLATFORM_TOKEN=$TOKEN
+export OPENAI_BASE_URL=http://127.0.0.1:8090/v1   # the gateway, not the provider
+export OPENAI_API_KEY=$TOKEN                      # the same token authorizes model calls
+export OPENAI_MODEL=deepseek/deepseek-v4.1-flash  # must be in the policy whitelist
 
 dsh --profile headless --patch deploy/dsh/dsh-platform.patch.yml \
   "Gọi tool mcp__platform__nlp_ask với câu hỏi: 'Có bao nhiêu người chơi đến từ Việt Nam?'"
 ```
+
+The provider key never leaves the server: `POST /v1/chat/completions` holds it, the caller holds a
+token. Point `OPENAI_BASE_URL` at a provider directly instead and each person needs their own
+provider account — which is the thing this endpoint exists to avoid.
+
+## Two doors, one identity, one bill
+
+```
+/v1/chat/completions  bearer token → user → model service → provider (key stays here)
+/mcp                  bearer token → user → role → tools
+```
+Measured in one run, from the gateway audit rather than from a transcript:
+
+```
+{event: openai_chat, user: "1001", model: "deepseek/deepseek-v4.1-flash",
+ prompt_tokens: 6514, completion_tokens: 69, ms: 2202}
+{event: mcp_call,    user: "1001", tool: "nlp_ask", ms: 2243}
+{event: openai_model_denied, user: "1001", model: "gpt-5-turbo-max"}
+→ answer: SELECT count() FROM players WHERE country IN ('VN','Vietnam','Việt Nam') → 4
+```
+
+Three rules the endpoint keeps, all testable:
+
+- **Identity is the transport's.** A body carrying `platform_user_id: "1001"` while the token says
+  `2002` is charged to `2002`. A caller that can name itself can name somebody else.
+- **The whitelist is the guard.** `models.allow` names what may be reached; a role may only narrow
+  it. A name outside it is refused with `404 model_not_found` **before** the provider is asked, and
+  a role that may not use a model gets the same answer as one asking for a model that does not
+  exist — otherwise the endpoint becomes a way to enumerate other roles' access.
+- **The name passes through.** `model` is forwarded to the provider unchanged, so the whitelist
+  lists provider model ids. There is no rename map: `gpt-4.1-mini` in the list means the provider
+  will be asked for `gpt-4.1-mini`.
+
+`stream: true` returns a valid SSE sequence — role delta, one content delta, finish, `[DONE]`. The
+content arrives as **one chunk**, because the model service answers whole turns; a client sees the
+same events in the same order, and this is stated rather than dressed up as token streaming.
 
 ## What the overlay says, and why
 

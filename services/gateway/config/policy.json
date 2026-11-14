@@ -95,5 +95,18 @@
     "tokens_per_day": 200000,
     "requests_per_minute": 60,
     "burst": 20
+  },
+  "models": {
+    "allow": [
+      "gpt-4.1-mini",
+      "gpt-4.1",
+      "deepseek/deepseek-v4.1-flash"
+    ],
+    "by_role": {
+      "guest": [
+        "gpt-4.1-mini"
+      ]
+    },
+    "default": "gpt-4.1-mini"
   }
 }

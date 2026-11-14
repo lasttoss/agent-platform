@@ -437,15 +437,21 @@ func toolTimeout(meta ToolMeta) time.Duration {
 	return 60 * time.Second
 }
 
-func (r *Registry) Complete(system, user string, tools []map[string]any) (ModelTurn, error) {
+// Complete is one turn from the model service. `model` is the caller's choice when the request
+// came in through the OpenAI-shaped endpoint, and empty when the deployment's configured model is
+// the only one on offer.
+func (r *Registry) Complete(system, user string, tools []map[string]any, model ...string) (ModelTurn, error) {
 	r.mu.RLock()
-	model := r.Model
+	svc := r.Model
 	r.mu.RUnlock()
-	if model == nil {
+	if svc == nil {
 		return ModelTurn{}, errors.New("no model service configured")
 	}
-	out, err := model.Client.Call("chat_complete", map[string]any{
-		"system": system, "user": user, "tools": tools}, "")
+	args := map[string]any{"system": system, "user": user, "tools": tools}
+	if len(model) > 0 && model[0] != "" {
+		args["model"] = model[0]
+	}
+	out, err := svc.Client.Call("chat_complete", args, "")
 	if err != nil {
 		return ModelTurn{}, err
 	}

@@ -91,6 +91,11 @@ and then through a ClickHouse user that may only read. See `services/clickhouse/
 `nlp_ask` needs a model: point the model service at any OpenAI-compatible endpoint (the guard and
 the read-only database user stay in the path whoever the provider is).
 
+A harness needs one credential, not two: `/v1/chat/completions` and `/v1/models` speak the OpenAI
+shape on top of the same token → user → policy path as `/mcp`, so a client's model calls and tool
+calls are authorized, counted and audited in one place. The provider key stays on the server, and
+the model names a caller may reach come from `models.allow` in the policy.
+
 A real agent harness is the honest test of "MCP all the way down": `deploy/dsh/dsh-platform.patch.yml`
 composes dsh with the gateway as its only tool server, and `docs/dsh-client.md` records what that
 run proved, including the two failures it exposed.

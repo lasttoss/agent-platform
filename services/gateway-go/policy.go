@@ -15,6 +15,61 @@ type Policy struct {
 	Roles        map[string]RoleConf `json:"roles"`
 	Chats        map[string]ChatConf `json:"chats"`
 	Quota        Quota               `json:"quota"`
+	// Models is the whitelist for the OpenAI-shaped endpoint. A client may ask for any model
+	// name it likes; only the ones named here reach the provider. Empty means nothing is allowed,
+	// which is what a new deployment should start with — an endpoint that forwards any model name
+	// it is handed is a way to spend somebody else's budget.
+	Models ModelConf `json:"models"`
+}
+
+// ModelConf narrows what a role may ask for. A role can only shrink `allow`, never extend it:
+// the same rule roles follow for tools, for the same reason.
+type ModelConf struct {
+	Allow  []string            `json:"allow"`
+	ByRole map[string][]string `json:"by_role"`
+	// Default is what a client that names no model gets. Empty means "refuse", not "pick one".
+	Default string `json:"default"`
+}
+
+// VisibleModels is the whitelist as this caller sees it, in a stable order.
+func (p *Policy) VisibleModels(pal Principal) []string {
+	granted := p.Models.Allow
+	if role, ok := p.Models.ByRole[pal.Role]; ok {
+		for _, name := range role {
+			if name == "*" {
+				return append([]string{}, granted...)
+			}
+		}
+		granted = intersect(granted, role)
+	}
+	return append([]string{}, granted...)
+}
+
+// ModelAllowed answers the only question the endpoint needs: may this caller spend on this model?
+func (p *Policy) ModelAllowed(pal Principal, model string) bool {
+	if model == "" {
+		model = p.Models.Default
+	}
+	for _, name := range p.VisibleModels(pal) {
+		if name == model {
+			return true
+		}
+	}
+	return false
+}
+
+func intersect(all, some []string) []string {
+	keep := map[string]bool{}
+	for _, s := range some {
+		keep[s] = true
+	}
+	out := []string{}
+	for _, a := range all {
+		if keep[a] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 type User struct {

@@ -761,6 +761,9 @@ func (s *Server) Routes() http.Handler {
 		code, body := s.Whoami(r.URL.Query().Get("user"), r.URL.Query().Get("chat"))
 		writeJSON(w, code, body)
 	})
+	// The OpenAI shape, so a harness that already speaks it needs one credential: its token.
+	mux.HandleFunc("/v1/models", s.openAIModels)
+	mux.HandleFunc("/v1/chat/completions", s.openAIChat)
 	mux.HandleFunc("/v1/respond", func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorizeAdapter(r) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"denied": "bad_adapter_token"})

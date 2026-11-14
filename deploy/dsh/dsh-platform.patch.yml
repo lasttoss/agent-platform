@@ -1,8 +1,11 @@
 # dsh as a client of this platform. Everything provider-specific comes from the environment,
 # because a harness that hardcodes one vendor is a harness you have to patch again next month:
 #
-#   OPENAI_BASE_URL   an OpenAI-compatible endpoint, e.g. https://api.openai.com/v1
-#   OPENAI_API_KEY    the key for that endpoint (never in this file)
+#   OPENAI_BASE_URL   an OpenAI-compatible endpoint. Point it at the platform's own gateway
+#                     (http://127.0.0.1:8090/v1) and the provider key never leaves the server;
+#                     point it at a provider and every person needs their own provider account.
+#   OPENAI_API_KEY    the key for that endpoint (never in this file). Against the gateway this is
+#                     the same platform token as PLATFORM_TOKEN: one credential, two doors.
 #   OPENAI_MODEL      a model id that endpoint serves
 #   PLATFORM_TOKEN    a token from config/dsh-tokens.json (the KEY, not the user id it maps to)
 #

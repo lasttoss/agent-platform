@@ -428,3 +428,26 @@ func asMap(v any) map[string]any {
 	}
 	return map[string]any{}
 }
+
+// MCPToolDef exposes one advertised tool in MCP shape (description + inputSchema). The OpenAI
+// shape returned by Schema() is for the model service; an MCP client needs the original.
+func (r *Registry) MCPToolDef(tool string) (string, map[string]any, bool) {
+	r.mu.RLock()
+	srv, ok := r.byTool[tool]
+	if !ok {
+		r.mu.RUnlock()
+		return "", nil, false
+	}
+	t := srv.Tools[tool]
+	r.mu.RUnlock()
+	desc := t.Description
+	if m, ok := r.Meta[tool]; ok {
+		if m.Description != "" {
+			desc = m.Description
+		}
+		if m.Provider != "" {
+			desc += " (provider: " + m.Provider + ")"
+		}
+	}
+	return desc, t.InputSchema, true
+}

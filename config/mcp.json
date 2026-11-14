@@ -1,6 +1,16 @@
 {
   "servers": [
     {
+      "name": "jira",
+      "url": "http://127.0.0.1:8092/mcp",
+      "health_url": "http://127.0.0.1:8092/health",
+      "tools": [
+        "jira_search",
+        "jira_get_issue",
+        "jira_create_issue"
+      ]
+    },
+    {
       "name": "demo-tools",
       "url": "http://127.0.0.1:8091/mcp",
       "tools": [

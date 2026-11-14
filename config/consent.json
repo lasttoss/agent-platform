@@ -4,7 +4,8 @@
       "drive.readonly"
     ],
     "jira": [
-      "read:jira-work"
+      "read:jira-work",
+      "write:jira-work"
     ],
     "imap": [
       "mail.read"
@@ -13,7 +14,10 @@
   },
   "2002": {
     "google_drive": [],
-    "local_ocr": []
+    "local_ocr": [],
+    "jira": [
+      "read:jira-work"
+    ]
   },
   "3003": {
     "local_ocr": []

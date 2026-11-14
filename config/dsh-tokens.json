@@ -1,0 +1,7 @@
+{
+  "//": "Demo tokens only: they map to the demo users in services/gateway/config/policy.json. A real deployment issues one token per user and rotates it; never commit those.",
+  "tokens": {
+    "dsh-demo-owner-token": "1001",
+    "dsh-demo-dev-token": "2002"
+  }
+}

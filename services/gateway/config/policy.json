@@ -30,7 +30,9 @@
         "status",
         "ocr_extract",
         "ocr_result",
-        "wiki_search"
+        "wiki_search",
+        "jira_search",
+        "jira_get_issue"
       ]
     },
     "guest": {
@@ -51,7 +53,9 @@
         "drive_search",
         "jira_search",
         "mail_list",
-        "wiki_search"
+        "wiki_search",
+        "jira_get_issue",
+        "jira_create_issue"
       ],
       "personal_data": true,
       "private_tools": [],

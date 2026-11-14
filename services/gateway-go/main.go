@@ -29,6 +29,7 @@ func main() {
 	localPath := flag.String("local", "../../config/local.json", "gitignored local overrides")
 	toolsPath := flag.String("tools", "../../config/tools.json", "tool policy metadata")
 	mcpPath := flag.String("mcp", "../../config/mcp.json", "MCP services")
+	tokensPath := flag.String("tokens", "../../config/dsh-tokens.json", "MCP client tokens (token → user id)")
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	audit := flag.String("audit", "state/audit.log", "audit log path")
 	refresh := flag.Duration("refresh", 30*time.Second,
@@ -47,6 +48,7 @@ func main() {
 	*consentPath = firstExisting(*consentPath, "config/consent.json")
 	*toolsPath = firstExisting(*toolsPath, "config/tools.json")
 	*mcpPath = firstExisting(*mcpPath, "config/mcp.json")
+	*tokensPath = firstExisting(*tokensPath, "config/dsh-tokens.json")
 
 	pol, err := LoadPolicy(*policyPath)
 	if err != nil {
@@ -140,6 +142,18 @@ func main() {
 	srv.StartAuditSink(*auditHTTP)
 	if *auditHTTP != "" {
 		fmt.Println("audit sink:", *auditHTTP)
+	}
+	if raw, err := os.ReadFile(*tokensPath); err != nil {
+		// No token file means /mcp stays off: an unauthenticated tool endpoint is worse than
+		// an absent one, and silence about it is worst of all.
+		log.Printf("mcp front disabled: %v", err)
+	} else {
+		var tm TokenMap
+		if err := json.Unmarshal(raw, &tm); err != nil {
+			log.Fatalf("tokens: %v", err)
+		}
+		srv.MCP = NewMCPFront(srv, tm.Tokens)
+		fmt.Printf("mcp front on /mcp — %d token(s), identity from transport\n", len(tm.Tokens))
 	}
 	srv.AdapterToken = os.Getenv("ADAPTER_TOKEN")
 	if srv.AdapterToken != "" {

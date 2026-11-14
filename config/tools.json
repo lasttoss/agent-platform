@@ -72,5 +72,17 @@
     "max_in_flight": 1,
     "personal": false,
     "ttl": 0
+  },
+  "jira_get_issue": {
+    "description": "Read one Jira issue by key.",
+    "provider": "jira",
+    "scope": "read:jira-work",
+    "ttl": 600
+  },
+  "jira_create_issue": {
+    "description": "Create a Jira issue. Never cached.",
+    "provider": "jira",
+    "scope": "write:jira-work",
+    "ttl": 0
   }
 }

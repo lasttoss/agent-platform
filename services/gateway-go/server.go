@@ -54,6 +54,10 @@ type Server struct {
 	// moment the gateway is not on the same host as its adapter.
 	AdapterToken string
 
+	// MCP is the same pipeline exposed to an MCP client (DeepSeek Harness, Claude Desktop).
+	// Identity arrives as a bearer token in the transport, never as a tool argument.
+	MCP *MCPFront
+
 	mu    sync.Mutex
 	usage map[string]map[string]int // userID → {"requests", "tokens"}
 	sems  map[string]chan struct{}  // tool → in-flight slots (see acquire)
@@ -648,6 +652,12 @@ func (s *Server) Routes() http.Handler {
 		stats["tools_advertised"] = names
 		writeJSON(w, 200, stats)
 	})
+	if s.MCP != nil {
+		mux.Handle("/mcp", s.MCP)
+		mux.HandleFunc("/stats/mcp", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, 200, s.MCP.Stats())
+		})
+	}
 	mux.HandleFunc("/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "GET only", http.StatusMethodNotAllowed)

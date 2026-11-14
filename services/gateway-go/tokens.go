@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -56,6 +57,64 @@ func NewTokenSet(path string) (*tokenSet, error) {
 		return nil, err
 	}
 	return &tokenSet{path: path, mtime: mtime, tokens: tokens}, nil
+}
+
+// Save writes the whole map back, atomically, then adopts it as the current state.
+//
+// Write-temp-then-rename because every request reloads on mtime: a half-written file would be
+// read as "the operator deleted tokens" and lock people out for the duration of the write. The
+// in-memory map is replaced from the same data, so the next request in this process is authorized
+// by the new file rather than by the old map waiting for a mtime tick.
+func (t *tokenSet) Save(tokens map[string]string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	raw, err := json.MarshalIndent(TokenMap{Tokens: tokens}, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(t.path)
+	tmp, err := os.CreateTemp(dir, ".tokens-*.json")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeded
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, t.path); err != nil {
+		return err
+	}
+	if info, err := os.Stat(t.path); err == nil {
+		t.mtime = info.ModTime()
+	}
+	t.tokens = tokens
+	return nil
+}
+
+// snapshot is a copy of the current map, for a caller that intends to modify and save it.
+func (t *tokenSet) snapshot() map[string]string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make(map[string]string, len(t.tokens))
+	for k, v := range t.tokens {
+		out[k] = v
+	}
+	return out
+}
+
+// userFor reports which user a token is for, without revealing the token.
+func (t *tokenSet) userFor(tok string) (string, bool) {
+	uid, ok, _ := t.Lookup(tok)
+	return uid, ok
 }
 
 func (t *tokenSet) Count() int {

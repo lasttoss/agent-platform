@@ -196,7 +196,10 @@ services:
       - -tools=/config/tools.json
       - -mcp=/config/mcp.json
       - -audit=/state/audit.jsonl
-      - -tokens=/tokens.json
+      # Runtime state, not a checkout file: the console rotates tokens, so the live file sits on
+      # the state volume and the repository file only seeds it on first start.
+      - -tokens=/state/tokens.json
+      - -tokens-seed=/tokencfg/dsh-tokens.json
       - -roles=/roles/roles.json
       # Shared counters: two replicas add up instead of each handing out the full allowance.
       # The file store stays available (-usage) for a single-process run.
@@ -215,9 +218,10 @@ services:
       # copies of an authorization table is a drift bug waiting to be shipped.
       - ../../services/gateway/config:/repo-config:ro
       - ./config:/config:ro
-      # Kept out of /config on purpose: that mount is read-only, and a file inside it cannot be
-      # mounted separately. Rotation in the container happens by editing this file on the host.
-      - ../../config/dsh-tokens.json:/tokens.json:ro
+      # Writable directory, not a single writable file: rotation writes a temp file and renames it
+      # into place, which needs a writable directory next to the target. Mounting the file alone
+      # makes the rename impossible ("permission denied"), which is exactly how this was found.
+      - ../../config:/tokencfg:ro
       - gatewaystate:/state
       # The console writes role assignments here; a deploy copy of policy.json stays untouched.
       - rolestate:/roles

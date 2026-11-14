@@ -26,6 +26,26 @@ The provider key never leaves the server: `POST /v1/chat/completions` holds it, 
 token. Point `OPENAI_BASE_URL` at a provider directly instead and each person needs their own
 provider account — which is the thing this endpoint exists to avoid.
 
+## Where the token comes from
+
+Two ways, both honest about the same rule: a token is shown **once**, and a lost token is
+**rotated**, never revealed again.
+
+```
+console → Connect          your own token (masked), "Rotate my token" → new token + a
+                           ready-to-paste snippet; the tab adopts the new token immediately,
+                           because the old one stops working on the *next* request
+console → Tokens (admin)   issue a token for a provisioned user, revoke anybody's; revoking
+                           your own is refused with 409 and points at rotate
+by hand                    edit the file and the mtime watcher puts it into force — no restart
+```
+
+The live file is state, not a checkout file. In the container it lives on the state volume
+(`/state/tokens.json`), seeded once from `config/dsh-tokens.json`; that is why rotation works
+without the gateway holding write access to the repository. Rotating the mounted *file* instead
+fails with `open /.tokens-….json: permission denied` — a rename needs a writable directory next to
+the target, which a single-file bind mount does not provide. Found by trying it.
+
 ## Two doors, one identity, one bill
 
 ```

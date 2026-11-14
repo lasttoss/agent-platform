@@ -48,6 +48,19 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export type Me = {
+  user: string;
+  name?: string;
+  role: string;
+  workspace?: string;
+  models: string[];
+  admin: boolean;
+  token_masked: string;
+  token_id: string;
+};
+export type TokenRow = { id: string; user: string; masked: string };
+export type NewToken = { token: string; masked: string; user: string; id?: string; note?: string };
+
 export const api = {
   roles: () => call<{ roles: RoleRow[] }>("/admin/roles"),
   users: () => call<{ users: UserRow[]; generation: number }>("/admin/users"),
@@ -57,4 +70,13 @@ export const api = {
       { method: "POST", body: JSON.stringify({ role }) },
     ),
   health: () => call<{ ok: boolean }>("/health"),
+  me: () => call<Me>("/me"),
+  rotateMyToken: () => call<NewToken>("/me/token/rotate", { method: "POST" }),
+  tokens: () => call<{ tokens: TokenRow[] }>("/admin/tokens"),
+  createToken: (user: string) =>
+    call<NewToken>("/admin/tokens", { method: "POST", body: JSON.stringify({ user }) }),
+  revokeToken: (id: string) =>
+    call<{ revoked: string; user: string }>(`/admin/tokens/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
 };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, RoleRow, tokenStore, UserRow } from "./api";
+import { api, ApiError, Me, NewToken, RoleRow, tokenStore, TokenRow, UserRow } from "./api";
 
 type Status = { kind: "idle" | "ok" | "bad"; text: string };
 
@@ -11,6 +11,10 @@ export default function App() {
   const [generation, setGeneration] = useState<number | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle", text: "" });
   const [busy, setBusy] = useState<string | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [tokens, setTokens] = useState<TokenRow[]>([]);
+  const [fresh, setFresh] = useState<NewToken | null>(null);
+  const [newFor, setNewFor] = useState("");
 
   const load = useCallback(async (message?: string) => {
     if (!tokenStore.get()) {
@@ -23,6 +27,8 @@ export default function App() {
       const u = await api.users();
       setUsers(u.users);
       setGeneration(u.generation);
+      setMe(await api.me());
+      setTokens((await api.tokens()).tokens);
       setStatus(message ? { kind: "ok", text: message } : { kind: "idle", text: "" });
     } catch (e) {
       const err = e as ApiError;
@@ -69,6 +75,64 @@ export default function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function rotateMine() {
+    setBusy("me");
+    try {
+      const out = await api.rotateMyToken();
+      // The old token stops working on the next request, so the tab adopts the new one before it
+      // shows the snippet — otherwise the next click would log the person out of their own page.
+      tokenStore.set(out.token);
+      setFresh(out);
+      setStatus({ kind: "ok", text: "New token issued. Copy it now; the list only ever shows a mask." });
+      await load();
+    } catch (e) {
+      setStatus({ kind: "bad", text: `Refused: ${(e as Error).message}` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function mintForAdmin(ev: React.FormEvent) {
+    ev.preventDefault();
+    if (!newFor.trim()) return;
+    setBusy("mint");
+    try {
+      const out = await api.createToken(newFor.trim());
+      setFresh(out);
+      setNewFor("");
+      setStatus({ kind: "ok", text: `Token for ${out.user}. Copy it now.` });
+      await load();
+    } catch (e) {
+      setStatus({ kind: "bad", text: `Refused: ${(e as Error).message}` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revoke(row: TokenRow) {
+    setBusy(row.id);
+    try {
+      await api.revokeToken(row.id);
+      setStatus({ kind: "ok", text: `Revoked ${row.masked} (${row.user}).` });
+      await load();
+    } catch (e) {
+      setStatus({ kind: "bad", text: `Refused: ${(e as Error).message}` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function snippet(token: string) {
+    const base = `${window.location.protocol}//${window.location.host}/v1`;
+    return [
+      `export OPENAI_BASE_URL=${base}`,
+      `export OPENAI_API_KEY=${token}`,
+      `export PLATFORM_TOKEN=${token}`,
+      `export OPENAI_MODEL=${me?.models[0] ?? "gpt-4.1-mini"}`,
+      `dsh --profile headless --patch deploy/dsh/dsh-platform.patch.yml "hỏi gì đó"`,
+    ].join("\n");
   }
 
   function forget() {
@@ -172,6 +236,93 @@ export default function App() {
             </ul>
           )}
         </section>
+
+        <section>
+          <div className="sec-head">
+            <h2>Connect</h2>
+            <span className="note">one token for the model door and the tool door</span>
+          </div>
+          {!me ? (
+            <p className="empty">No token loaded.</p>
+          ) : (
+            <>
+              <p className="meta">
+                {me.name || me.user} · {me.user} · role {me.role}
+                {me.admin && <span className="tag">admin</span>} · models:{" "}
+                {me.models.length ? me.models.join(", ") : "none granted"}
+              </p>
+              <p className="meta">
+                your token: <code>{me.token_masked}</code>
+              </p>
+              <div className="controls">
+                <button type="button" onClick={() => void rotateMine()} disabled={busy === "me"}>
+                  Rotate my token
+                </button>
+              </div>
+              {fresh && (
+                <>
+                  <p className="note">
+                    New token for {fresh.user} — shown once. {fresh.note}
+                  </p>
+                  <pre className="snippet">
+                    <code>{fresh.token}</code>
+                  </pre>
+                  <p className="note">Paste this into a shell:</p>
+                  <pre className="snippet">
+                    <code>{snippet(fresh.token)}</code>
+                  </pre>
+                </>
+              )}
+            </>
+          )}
+        </section>
+
+        {me?.admin && (
+          <section>
+            <div className="sec-head">
+              <h2>Tokens</h2>
+              <span className="note">masked on purpose; a lost token is rotated, not shown</span>
+            </div>
+            <form className="token" onSubmit={mintForAdmin}>
+              <input
+                placeholder="user id (e.g. 2002)"
+                value={newFor}
+                onChange={(e) => setNewFor(e.target.value)}
+                autoComplete="off"
+                aria-label="user id for a new token"
+              />
+              <button type="submit" disabled={busy === "mint"}>
+                Issue token
+              </button>
+            </form>
+            {tokens.length === 0 ? (
+              <p className="empty">No tokens in the file.</p>
+            ) : (
+              <ul className="users">
+                {tokens.map((row) => (
+                  <li className="user" key={row.id}>
+                    <div className="who">
+                      <span className="name">{row.user}</span>
+                      <span className="meta">
+                        <code>{row.masked}</code> · {row.id}
+                      </span>
+                    </div>
+                    <div className="controls">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void revoke(row)}
+                        disabled={busy === row.id}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
         <p className={`status ${status.kind}`} role="status" aria-live="polite">
           {status.text}

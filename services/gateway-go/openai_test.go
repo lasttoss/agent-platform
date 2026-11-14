@@ -17,12 +17,13 @@ import (
 // model service. Nothing here asserts on the provider; the model service is a stub that records
 // what it was asked for.
 type oaFixture struct {
-	base   string
-	owner  string
-	dev    string
-	calls  *[]map[string]any
-	audit  string
-	server *Server
+	base       string
+	owner      string
+	dev        string
+	calls      *[]map[string]any
+	audit      string
+	tokensPath string
+	server     *Server
 }
 
 func newOA(t *testing.T) *oaFixture {
@@ -96,7 +97,7 @@ func newOA(t *testing.T) *oaFixture {
 	tsrv := httptest.NewServer(srv.Routes())
 	t.Cleanup(tsrv.Close)
 	return &oaFixture{base: tsrv.URL, owner: "tok-owner", dev: "tok-dev", calls: &calls,
-		audit: auditPath, server: srv}
+		audit: auditPath, tokensPath: tokensPath, server: srv}
 }
 
 func err2str(e error) string {

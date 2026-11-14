@@ -107,3 +107,22 @@ audit                                           →  admin_role_change with acto
   transaction across two changes.
 - `GET /admin/users` knows policy users and console assignments, not the HR directory; attaching
   `services/userdir` would make the list authoritative.
+
+![The console's Connect and Tokens panels](figures/console-connect.png)
+
+## Connect: a person configures their own harness
+
+The console answers `/me` with the caller's identity, role, reachable models and a **mask** of
+their own token. From there:
+
+- **Rotate my token** — revokes the token in use and returns the replacement once. The tab stores
+  it before rendering, so the next click is not a 401. The old token is refused on the next
+  request, not on the next restart.
+- **Issue token** (admin) — a token for a provisioned user only; an unknown user is `404` rather
+  than a token nobody can explain.
+- **Revoke** (admin) — by the token's short id (a sha256 prefix, so the list is stable without
+  holding tokens). Revoking your own token answers `409` and names rotate instead, because the
+  alternative is locking yourself out of the page you are using.
+
+The list is always masked. A token is shown exactly once, at creation: a store that can re-read a
+secret is a store that leaks it.

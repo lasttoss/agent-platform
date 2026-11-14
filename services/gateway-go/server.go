@@ -725,6 +725,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/admin/users", s.adminUsers)
 	mux.HandleFunc("/admin/users/", s.adminSetRole)
 	mux.HandleFunc("/admin/roles", s.adminRoles)
+	mux.HandleFunc("/admin/tokens", s.adminTokens)
+	mux.HandleFunc("/admin/tokens/", s.adminTokens)
+	// Self-service: the console shows a person their own credential so they can configure a
+	// harness without asking an operator to edit a file for them.
+	mux.HandleFunc("/me", s.me)
+	mux.HandleFunc("/me/token/rotate", s.meRotate)
 	mux.HandleFunc("/metrics", s.metrics)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})

@@ -230,6 +230,19 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$GW/v1/chat/completions" \
   -H 'Content-Type: application/json' -d '{"model":"gpt-4.1-mini","messages":[]}')
 expect "no token is not a user" "401" "$code"
 
+say "self-service credentials"
+me=$(curl -s "$GW/me" -H "Authorization: Bearer $OWNER_TOKEN")
+expect "a token says who it is" '"user":"1001"' "$me"
+expect "and shows a mask, never the token" 'dsh-…oken' "$me"
+tokens=$(curl -s "$GW/admin/tokens" -H "Authorization: Bearer $OWNER_TOKEN")
+expect "the admin list is masked" '…' "$tokens"
+case "$tokens" in
+  *"$OWNER_TOKEN"*) bad "the token list reproduced a token" ;;
+  *) ok "the token list reproduces no token" ;;
+esac
+code=$(curl -s -o /dev/null -w '%{http_code}' "$GW/admin/tokens" -H "Authorization: Bearer $DEV_TOKEN")
+expect "a non-admin cannot list tokens" "403" "$code"
+
 say "one audit view for every gateway"
 curl -sf "http://127.0.0.1:8096/v1/report?day=$(date +%F)" > /tmp/smoke-report.json \
   && python3 -c "

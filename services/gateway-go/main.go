@@ -33,6 +33,9 @@ func main() {
 	toolsPath := flag.String("tools", "../../config/tools.json", "tool policy metadata")
 	mcpPath := flag.String("mcp", "../../config/mcp.json", "MCP services")
 	tokensPath := flag.String("tokens", "../../config/dsh-tokens.json", "MCP client tokens (token → user id)")
+	// Runtime-mutable state should not live in a checkout: rotation writes this file, so in a
+	// container it belongs on the state volume, and the versioned file is only the seed.
+	tokensSeed := flag.String("tokens-seed", "", "copy this file to -tokens on first start, when -tokens does not exist yet")
 	rolesPath := flag.String("roles", "../../config/roles.json", "role assignments written by the console")
 	usagePath := flag.String("usage", "", "persist today's quota counters here, so a restart does not reset them")
 	usageDSN := flag.String("usage-dsn", os.Getenv("USAGE_DSN"),
@@ -58,6 +61,15 @@ func main() {
 	*toolsPath = firstExisting(*toolsPath, "config/tools.json")
 	*mcpPath = firstExisting(*mcpPath, "config/mcp.json")
 	*tokensPath = firstExisting(*tokensPath, "config/dsh-tokens.json")
+	if _, err := os.Stat(*tokensPath); err != nil && *tokensSeed != "" {
+		if raw, readErr := os.ReadFile(*tokensSeed); readErr == nil {
+			if writeErr := os.WriteFile(*tokensPath, raw, 0o600); writeErr != nil {
+				log.Fatalf("tokens seed: %v", writeErr)
+			}
+			log.Printf("tokens: seeded %s from %s (rotation writes the state copy from now on)",
+				*tokensPath, *tokensSeed)
+		}
+	}
 	*rolesPath = firstExisting(*rolesPath, "config/roles.json")
 
 	pol, err := LoadPolicy(*policyPath)

@@ -9,6 +9,9 @@ cd "$(dirname "$0")/.."
 
 COMPOSE=(docker compose -f deploy/compose/docker-compose.yml)
 GW=http://127.0.0.1:8090
+# The demo tokens from config/dsh-tokens.json; they are demo values, stated as such in the file.
+OWNER_TOKEN=dsh-demo-owner-token
+DEV_TOKEN=dsh-demo-dev-token
 UI=http://127.0.0.1:8088
 fail=0
 
@@ -152,6 +155,51 @@ else
   bad "counters did not survive the restart: $used_before → $used_after"
 fi
 
+say "an analytics question reaches ClickHouse through the gateway"
+TOOL_CALL() {  # token, tool, args-json
+  curl -s --max-time 30 -X POST "$GW/mcp" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $1" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}"
+}
+SCHEMA=$(TOOL_CALL "$OWNER_TOKEN" ch_schema '{}' | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['result']
+print(d['content'][0]['text'] if not d.get('isError') else 'ERR ' + d['content'][0]['text'])")
+if printf '%s' "$SCHEMA" | grep -q '"events'; then
+  ok "ch_schema lists the seeded tables"
+else
+  bad "ch_schema did not return the seeded schema: $SCHEMA"
+fi
+
+ROWS=$(TOOL_CALL "$OWNER_TOKEN" ch_query '{"sql":"SELECT event, count() AS n FROM events GROUP BY event ORDER BY n DESC LIMIT 3"}' | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['result']
+if d.get('isError'):
+    print('ERR ' + d['content'][0]['text'])
+else:
+    b=json.loads(d['content'][0]['text']); print(b['row_count'])")
+if [ "${ROWS:-0}" -ge 1 ] 2>/dev/null; then
+  ok "ch_query returned $ROWS rows from ClickHouse"
+else
+  bad "ch_query did not return rows: $ROWS"
+fi
+
+REJECTED=$(TOOL_CALL "$OWNER_TOKEN" ch_query '{"sql":"DROP TABLE events"}' | grep -c "sql_rejected" || true)
+if [ "${REJECTED:-0}" -ge 1 ]; then
+  ok "a mutation is refused by the guard before it reaches the database"
+else
+  bad "ch_query accepted a DROP"
+fi
+
+DEV_TOOLS=$(curl -s -X POST "$GW/mcp" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $DEV_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  | python3 -c "import json,sys;print(' '.join(t['name'] for t in json.load(sys.stdin)['result']['tools']))")
+if printf '%s' "$DEV_TOOLS" | grep -q ch_schema && ! printf '%s' "$DEV_TOOLS" | grep -q ch_query; then
+  ok "raw SQL is owner-only: dev sees ch_schema + nlp_ask, not ch_query"
+else
+  bad "role separation for ClickHouse tools is wrong: $DEV_TOOLS"
+fi
 say "one audit view for every gateway"
 curl -sf "http://127.0.0.1:8096/v1/report?day=$(date +%F)" > /tmp/smoke-report.json \
   && python3 -c "

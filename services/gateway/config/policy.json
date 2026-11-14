@@ -33,7 +33,9 @@
         "ocr_result",
         "wiki_search",
         "jira_search",
-        "jira_get_issue"
+        "jira_get_issue",
+        "ch_schema",
+        "nlp_ask"
       ]
     },
     "guest": {
@@ -56,7 +58,10 @@
         "mail_list",
         "wiki_search",
         "jira_get_issue",
-        "jira_create_issue"
+        "jira_create_issue",
+        "ch_schema",
+        "ch_query",
+        "nlp_ask"
       ],
       "personal_data": true,
       "private_tools": [],
@@ -65,7 +70,9 @@
     "group_internal": {
       "tools": [
         "docs_search",
-        "status"
+        "status",
+        "ch_schema",
+        "nlp_ask"
       ],
       "personal_data": false,
       "private_tools": [

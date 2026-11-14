@@ -53,6 +53,52 @@ services:
       retries: 20
     ports: ["8093:8093"]
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      # No password and no host port: this container is reachable only from this network, and the
+      # service that reads it uses the read-only user created in init.sql.
+      CLICKHOUSE_SKIP_USER_SETUP: "0"
+    volumes:
+      - chdata:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # 8124 on the host for a developer's own queries; 8123 stays inside the network. The service
+    # never uses the host port.
+    ports: ["8124:8123"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  clickhouse-mcp:
+    <<: *python
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.python
+      args:
+        SERVICE: clickhouse
+    environment:
+      PORT: "8098"
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: app_readonly
+      CLICKHOUSE_PASSWORD: app_readonly_pw
+      CLICKHOUSE_DB: analytics
+      # The NLP tool asks the model service for one SELECT; it does not embed a model client.
+      MODEL_MCP_URL: http://model-mcp:8097/mcp
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      model-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8098/health',timeout=3)"]
+      interval: 3s
+      timeout: 4s
+      retries: 20
+    ports: ["8098:8098"]
+
   audit-sink:
     <<: *python
     build:
@@ -211,6 +257,7 @@ services:
     ports: ["8088:80"]
 
 volumes:
+  chdata:
   rolestate:
   pgdata:
   auditdb:

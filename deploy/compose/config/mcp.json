@@ -42,6 +42,16 @@
       "tools": [
         "wiki_search"
       ]
+    },
+    {
+      "name": "clickhouse",
+      "url": "http://clickhouse-mcp:8098/mcp",
+      "health_url": "http://clickhouse-mcp:8098/health",
+      "tools": [
+        "ch_query",
+        "ch_schema",
+        "nlp_ask"
+      ]
     }
   ]
 }

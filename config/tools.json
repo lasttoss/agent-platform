@@ -87,5 +87,22 @@
     "provider": "jira",
     "scope": "write:jira-work",
     "ttl": 0
+  },
+  "ch_query": {
+    "description": "One read-only SELECT against ClickHouse.",
+    "ttl": 0,
+    "timeout_s": 30,
+    "max_in_flight": 4
+  },
+  "ch_schema": {
+    "description": "Tables and columns in the analytics database.",
+    "ttl": 60,
+    "timeout_s": 10
+  },
+  "nlp_ask": {
+    "description": "A question in words, translated to one SELECT by the model service, checked, then run.",
+    "ttl": 0,
+    "timeout_s": 60,
+    "max_in_flight": 2
   }
 }

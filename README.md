@@ -79,6 +79,19 @@ curl -s -X POST 127.0.0.1:8090/v1/respond -H 'Content-Type: application/json' \
 | Workers hold no authority and no platform credentials | `services/ocr/` | one worker bug widens authority for everyone |
 | Personal and third-party data leave the chat: DM only, aggregate in groups | `policy.json` + `server.py` | a salary or a candidate CV lands in a group |
 
+## ClickHouse service
+
+`services/clickhouse/` answers three tools: `ch_schema` (tables), `ch_query` (one read-only
+SELECT, owner only) and `nlp_ask` (a question in words → one SELECT from the model service →
+checked → run, with the SQL returned next to the rows). Every query travels through `sqlguard.py`
+and then through a ClickHouse user that may only read. See `services/clickhouse/README.md`.
+
+```
+docker compose -f deploy/compose/docker-compose.yml up -d --build clickhouse clickhouse-mcp
+curl -s localhost:8090/mcp -H 'Authorization: Bearer dsh-demo-owner-token' -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ch_query","arguments":{"sql":"SELECT event, count() AS n FROM events GROUP BY event"}}}'
+```
+
 ## Long-running tools
 
 Mark a tool `"long_running": true` in `config/tools.json` and the call returns

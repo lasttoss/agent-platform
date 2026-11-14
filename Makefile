@@ -1,11 +1,11 @@
 PY := python3
 
-.PHONY: test samples test-gateway test-ocr test-model test-userdir test-audit test-go parity \
+.PHONY: test samples test-gateway test-ocr test-model test-userdir test-clickhouse test-audit test-go parity \
 	run-gateway run-gateway-go run-ts-example run-mcp-demo run-model run-ocr run-userdir \
 	run-audit-sink
-	run-adapter demo-adapter check-users compose-up compose-down compose-logs compose-smoke
+	run-clickhouse run-adapter demo-adapter check-users compose-up compose-down compose-logs compose-smoke
 
-test: samples test-gateway test-ocr test-model test-userdir test-audit test-go
+test: samples test-gateway test-ocr test-model test-userdir test-clickhouse test-audit test-go
 
 samples:
 	@python3 services/ocr/samples/make_samples.py >/dev/null && echo "== samples =="
@@ -21,6 +21,10 @@ test-userdir:
 test-audit:
 	@echo "== audit-sink =="
 	@cd services/audit-sink && $(PY) -m unittest discover -s tests
+
+test-clickhouse:
+	@echo "== clickhouse =="
+	@cd services/clickhouse && $(PY) -m unittest discover -s tests
 
 test-ocr:
 	@echo "== ocr =="
@@ -64,6 +68,9 @@ demo-adapter:
 
 run-ocr:
 	cd services/ocr && PORT=8099 $(PY) server.py
+
+run-clickhouse:
+	cd services/clickhouse && PORT=8098 CLICKHOUSE_URL=$${CLICKHOUSE_URL:-http://127.0.0.1:8124} $(PY) server.py
 
 run-userdir:
 	cd services/userdir && PORT=8093 $(PY) server.py

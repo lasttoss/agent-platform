@@ -42,6 +42,16 @@
       "name": "model",
       "url": "http://127.0.0.1:8097/mcp",
       "role": "model"
+    },
+    {
+      "name": "clickhouse",
+      "url": "http://127.0.0.1:8098/mcp",
+      "health_url": "http://127.0.0.1:8098/health",
+      "tools": [
+        "ch_query",
+        "ch_schema",
+        "nlp_ask"
+      ]
     }
   ]
 }

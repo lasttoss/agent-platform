@@ -18,7 +18,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:8090/v1   # the gateway, not the provide
 export OPENAI_API_KEY=$TOKEN                      # the same token authorizes model calls
 export OPENAI_MODEL=deepseek/deepseek-v4.1-flash  # must be in the policy whitelist
 
-dsh --profile headless --patch deploy/dsh/dsh-platform.patch.yml \
+dsh --profile headless --patch deploy/dsh/bundle/cordis.patch.yml \
   "Gọi tool mcp__platform__nlp_ask với câu hỏi: 'Có bao nhiêu người chơi đến từ Việt Nam?'"
 ```
 
@@ -50,13 +50,22 @@ the target, which a single-file bind mount does not provide. Found by trying it.
 
 The setup is files, so it is copied rather than retyped:
 
+The bundle is one npm package, `deploy/dsh/bundle`, whose `package.json` says
+`"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`. That is the whole "install everything"
+answer: the profile lists it in `dsh.profile.bundles` and there is nothing else to set up.
+
 ```
-./scripts/dsh_bootstrap.sh platform        # create the profile + merge the overlay + probe a model
+./scripts/dsh_bootstrap.sh platform        # create the profile + install the bundle + probe a model
 export OPENAI_BASE_URL=http://127.0.0.1:8090/v1 OPENAI_API_KEY=<token> PLATFORM_TOKEN=<token>
 dsh platform "list the tables in the analytics database"
 ```
 
-Four things learned by running it, all now handled in the script:
+Five things learned by running it, all now handled in the script:
+
+- `dsh plugin --profile X add <pkg>` also records the bundle in `dsh.profile.bundles`, so the run
+  command needs no flags afterwards. A profile is a pnpm workspace root, so the bare `add` fails
+  with `ERR_PNPM_ADDING_TO_ROOT` and needs `-w` — the message reads like a policy problem and is
+  not one.
 
 - the shipped profile template's `cordis.patch.yml` ends with a lone `[]`, so *appending* the
   overlay yields a second YAML document and dsh refuses it ("end of the stream or a document

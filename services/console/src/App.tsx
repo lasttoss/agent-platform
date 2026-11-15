@@ -131,7 +131,7 @@ export default function App() {
       `export OPENAI_API_KEY=${token}`,
       `export PLATFORM_TOKEN=${token}`,
       `export OPENAI_MODEL=${me?.models[0] ?? "gpt-4.1-mini"}`,
-      `dsh --profile headless --patch deploy/dsh/dsh-platform.patch.yml "hỏi gì đó"`,
+      `dsh platform "hỏi gì đó"   # after scripts/dsh_bootstrap.sh platform`,
     ].join("\n");
   }
 

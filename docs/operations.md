@@ -184,3 +184,19 @@ Latest run: `10/10 handwritten · 60/60 generated identical · 3 same-answer cac
 | Jobs are in-memory and single-process | a restart loses them; two replicas cannot poll each other's jobs | durable job store, ~1–2 days |
 | Jobs have no progress | a 5-minute job shows "running" and then "done" | SSE progress from the service, ~1 day |
 | Role store has no history | audit log has it, the UI does not | read `admin_role_change` back, ~half day |
+
+## Resetting the daily quota by hand
+
+The shared counter is `effective(user) = db(user) + (local(user) − reported(user))`, so deleting
+the row while the gateway runs does nothing: the process still holds the local half. Deleting and
+then restarting is also wrong — the shutdown flush writes the in-memory numbers back, resurrecting
+the row you just removed. The order that works is:
+
+```
+docker compose stop gateway && docker exec <pg> psql -U postgres -d agent -c "delete from usage_counters;" \
+  && docker compose start gateway
+```
+
+Measured while doing it: after a delete-and-restart the row came back at 49 requests / 202,848
+tokens even though the table had been empty, and `/v1/chat/completions` kept answering
+`429 insufficient_quota` with zero rows in the database.

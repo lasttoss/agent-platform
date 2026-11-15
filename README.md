@@ -17,6 +17,17 @@ explained out loud; no support, no SLA, no deployment story. 204 tests: Go gatew
 reference gateway 45, ClickHouse service 29, OCR 21, userdir 8, audit sink 7, model service 6.
 Everything that identifies a real person or a real amount lives outside git, in `config/local.json`.
 
+## Verify in 60 seconds
+
+```bash
+git clone https://github.com/lasttoss/agent-platform && cd agent-platform
+make test           # 204 tests: Go gateway 88, Python services 116 — no network, no keys
+make compose-smoke  # starts the stack, then asserts the gateway refuses a token it should refuse
+```
+
+`make test` is exactly what CI runs on every push; `compose-smoke` needs Docker. If a number here
+stops matching the output, that is a bug in this README, not in the code.
+
 ## Layout
 
 ```
@@ -52,7 +63,7 @@ HTTP/MCP only.
 ## Run
 
 ```bash
-make test              # 91 tests, no network, no keys
+make test              # 204 tests, no network, no keys
 make run-mcp-demo      # 127.0.0.1:8091  demo tools (MCP)
 make run-ocr           # 127.0.0.1:8099  OCR service (MCP) + REST for the queue
 make run-model         # 127.0.0.1:8097  model service (MCP, mock until MODEL_BASE_URL is set)

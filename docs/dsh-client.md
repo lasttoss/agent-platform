@@ -46,6 +46,32 @@ without the gateway holding write access to the repository. Rotating the mounted
 fails with `open /.tokens-….json: permission denied` — a rename needs a writable directory next to
 the target, which a single-file bind mount does not provide. Found by trying it.
 
+## Installing on another machine
+
+The setup is files, so it is copied rather than retyped:
+
+```
+./scripts/dsh_bootstrap.sh platform        # create the profile + merge the overlay + probe a model
+export OPENAI_BASE_URL=http://127.0.0.1:8090/v1 OPENAI_API_KEY=<token> PLATFORM_TOKEN=<token>
+dsh platform "list the tables in the analytics database"
+```
+
+Four things learned by running it, all now handled in the script:
+
+- the shipped profile template's `cordis.patch.yml` ends with a lone `[]`, so *appending* the
+  overlay yields a second YAML document and dsh refuses it ("end of the stream or a document
+  separator is expected"). The `[]` is replaced, not appended after.
+- `dsh <profile> --from-default-profile headless --dump-config` creates the profile and **exits**;
+  without `--dump-config` it would boot the harness and sit there.
+- `/v1/models` says what the gateway *allows*, not what the provider *serves*. The policy default
+  `gpt-4.1-mini` is not deployed upstream, so a task fails with
+  `model_unavailable: HTTP Error 400` — which reads like a harness bug. The script probes each
+  allowed model with a 1-token call and takes the first that answers (`gpt-4.1-mini` → 502,
+  `gpt-4.1` → 502, `deepseek/deepseek-v4.1-flash` → 200).
+- a bundle-only profile gets everything from `package.json`'s `dsh.profile.bundles`; the overlay is
+  the part that names *this* platform, so it belongs in the profile's own layer and not in a flag
+  people have to remember.
+
 ## Two doors, one identity, one bill
 
 ```

@@ -13,27 +13,36 @@ extraction code, no mail client and no provider SDK. Adding a capability means s
 service, not adding a branch.
 
 **Status: research notes, not production software.** Written to understand the problem and to be
-explained out loud; no support, no SLA, no deployment story. 91 tests: Go gateway 22, Python
-reference gateway 43, OCR 21, model service 5. Everything that identifies a real person or a real
-amount lives outside git, in `config/local.json`.
+explained out loud; no support, no SLA, no deployment story. 204 tests: Go gateway 88, Python
+reference gateway 45, ClickHouse service 29, OCR 21, userdir 8, audit sink 7, model service 6.
+Everything that identifies a real person or a real amount lives outside git, in `config/local.json`.
 
 ## Layout
 
 ```
 services/gateway-go/  THE GATEWAY AND PROXY — policy, roles, consent, quota, cache, audit, MCP client
+  server.go           routes: /v1/respond, /v1/chat/completions, /v1/models, /mcp, /me, /admin
+  policy.go           what a role may see, and the generation that kills a stale cache entry
   rbac.go             one reason code per hidden tool; backs GET /v1/whoami
+  tokens_admin.go     issue once, rotate, never read back; state file + seed, never in the checkout
+  openai.go           the OpenAI-shaped surface: one token, a whitelist of model ids
+  mcpfront.go         one connection per tool service; identical calls coalesce (single-flight)
   cmd/mcp-demo/       demo tool service: salary, documents, status   (MCP)
+  cmd/jira-mock/      a fake ticket system the demo tools can write to (HTTP)
 services/ocr/         tool service: PDF text + image OCR, submit + read (MCP, no policy, no identity)
 services/userdir/     who exists, and whether they may act             (MCP, Postgres or SQLite)
 services/audit-sink/  one audit view for several gateways               (HTTP, SQLite)
 services/model-mcp/   the model as a service: "which tool fits this sentence" (MCP, no tool access)
+services/clickhouse/  read-only analytics: ch_schema, nlp_ask (raw ch_query is owner-only) (MCP)
 services/mcp-ts-example/  a tool service in TypeScript: the boundary is the protocol (MCP)
 services/console/     the operator console (Vite + React); nginx serves it and proxies the API
 services/gateway/     Python REFERENCE gateway + Telegram adapter (parity oracle, not the deployment)
 config/               policy.json, consent.json, tools.json, mcp.json  (the contract)
+deploy/compose/       the whole platform in containers; the target scripts/compose_smoke.sh asserts
+deploy/dsh/           a bundle, so a harness installs the platform with one command
 scripts/parity.py     starts both gateways + services, diffs 10 decisions
 docs/rbac.md          the gates, in order, and the reason code each one produces
-docs/figures/         platform-map.png · gateway-topology.png · cache-layers.png
+docs/figures/         platform-map · gateway-topology · cache-layers · console-connect
 ```
 
 Each service keeps its own tests, Makefile targets and README, so it can be lifted out and

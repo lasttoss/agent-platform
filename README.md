@@ -213,14 +213,34 @@ Two tests pin both halves: with a counting fake endpoint, a no-tool question in 
 **0** model calls and costs **0** tokens, while the same question in a DM makes exactly **1**.
 A policy that omits the key behaves like `false`.
 
+## Pictures
+
+Three figures carry the argument, and each one declares the files it documents
+(`<!-- diagram-meta -->` inside the HTML), so a freshness check can tell when a picture has drifted from
+the code it describes. They are SVG-in-HTML and exported to PNG at 2x.
+
+**Figure 1.** The container view: one gateway, seven services, three stores.
+[`platform-map.png`](docs/figures/platform-map.png) — alt: callers reach the gateway, the gateway calls MCP
+services, services write to Postgres, ClickHouse and the audit log.
+
+**Figure 2.** The decision path: ten stages in the order the code runs them, the seven visibility gates
+on the other side, and the second door (`/v1/chat/completions`).
+[`gateway-topology.png`](docs/figures/gateway-topology.png) — alt: a numbered chain from identity to audit,
+a column of reason codes, and the OpenAI-shaped path beside it.
+
+**Figure 3.** The cache chain: L1 exact, L2 semantic, L3 provider prefix, and single-flight coalescing —
+each with the mistake it can make.
+[`cache-layers.png`](docs/figures/cache-layers.png) — alt: five boxes in a row with three rows of
+cost, risk and bound, plus a panel of measured numbers.
+
 ## Three-layer cache (token cost)
 
-See `docs/figures/cache-layers.png` for the same idea as a picture.
+The same idea as Figure 3, with the keys spelled out.
 
 | Layer | What it matches | Key includes | Cost when it hits |
 |---|---|---|---|
 | **L1 exact** | same normalised request, same tool set, same policy version | text + sorted tools + policy version + chat type + **scope** | 0 model tokens, 1 request slot |
-| **L2 semantic** | reworded question in the same scope (cosine ≥ 0.93) | scope + embedding | 0 model tokens, answer reused |
+| **L2 semantic** | reworded question in the same scope **and the same tool** (cosine ≥ 0.93) | scope + tool + embedding | 0 model tokens, answer reused |
 | **L3 prefix** | byte-identical prompt prefix at the provider | sorted tool list + policy version | static prefix billed once, then cached by the provider |
 
 Scope is the security boundary: a personal answer is stored under `user:<id>` and is never

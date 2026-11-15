@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>agent-platform map</title>
+<title>agent-platform: container view</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- diagram-meta {"topic":"platform-map","level":"container","type":"architecture","question":"What is in the platform, and who holds authority?","sources":["services/gateway-go/policy.go","services/gateway-go/server.go","config/policy.json","services/console/src/App.tsx","deploy/compose/docker-compose.yml"],"updated":"2026-11-15"} -->
 <style>
   :root{
     --paper:#f5f5f5; --paper-2:#ececec;
@@ -39,103 +41,124 @@
 </head>
 <body>
 <main class="wrap">
-  <h1>One rule, four services</h1>
-  <p class="lead">Identity comes from the transport. Authority comes from the gateway. Workers only work.
-  Every arrow below exists to keep one of those three statements true.</p>
+  <h1>One gateway, seven services</h1>
+  <p class="lead">Identity comes from the transport. Authority comes from the gateway. Everything else is a service that only works — including the model.</p>
 
   <figure class="canvas">
-    <svg viewBox="0 0 1280 540" role="img" aria-labelledby="pmTitle pmDesc"
+    <svg viewBox="0 0 1280 624" role="img" aria-labelledby="fTitle fDesc"
          xmlns="http://www.w3.org/2000/svg">
-      <title id="pmTitle">agent-platform: clients, gateway, tool workers, providers, delivery and state</title>
-      <desc id="pmDesc">Chat clients send signed events to the gateway. The gateway resolves identity,
-      applies policy and consent, filters the tool list, and calls tool workers over HTTP or MCP.
-      Workers reach external providers with a token brokered by the gateway. Answers go to the chat as
-      aggregates, or to a direct message when the data is personal or belongs to a third party.
-      Policy, consent, tokens, jobs and an append-only audit log live server-side.</desc>
+      <title id="fTitle">agent-platform: container view</title>
+      <desc id="fDesc">Callers (chat platform, operator console, harness) reach the Go gateway, which applies policy, consent, quota and cache, then calls tool services over MCP. Stores hold users, analytics and audit; the model provider is reached only by the model service.</desc>
 
       <defs>
         <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4f5d75"/></marker>
         <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2e5aa8"/></marker>
         <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#7a8399"/></marker>
       </defs>
-
-      <text class="eyebrow" x="60" y="96">EDGE</text>
-      <text class="eyebrow" x="300" y="96">AUTHORITY · KEYS · AUDIT</text>
-      <text class="eyebrow" x="660" y="96">WORKERS · NO IDENTITY</text>
-
-      <!-- clients -->
-      <rect class="grp" x="60" y="110" width="180" height="140" rx="3"/>
-      <rect class="n" x="72" y="124" width="156" height="52" rx="3"/>
-      <text class="t name" x="86" y="146">Telegram</text>
-      <text class="t sub" x="86" y="162">message.from.id</text>
-      <rect class="n" x="72" y="186" width="156" height="52" rx="3"/>
-      <text class="t name" x="86" y="208">Discord</text>
-      <text class="t sub" x="86" y="224">member.id</text>
-      <text class="m" x="60" y="276">clients hold no secrets</text>
-
-      <!-- gateway -->
-      <rect class="focal" x="300" y="110" width="320" height="140" rx="3"/>
-      <text class="t name" x="316" y="136">Gateway</text>
-      <text class="t sub" x="316" y="160">identity → principal · policy + consent</text>
-      <text class="t sub" x="316" y="180">tool list filtered before the model sees it</text>
-      <text class="t sub" x="316" y="200">quota · tokens · audit · fail-closed</text>
-      <text class="m" x="316" y="230">the only component holding platform + model keys</text>
-
-      <!-- workers -->
-      <rect class="nf" x="660" y="110" width="300" height="140" rx="3"/>
-      <text class="t name" x="676" y="136">Tool workers · Python</text>
-      <text class="t sub" x="676" y="160">ocr · pdf/docx parse</text>
-      <text class="t sub" x="676" y="180">mail fetch · job runner</text>
-      <text class="t sub" x="676" y="200">drive / jira via MCP</text>
-      <text class="m" x="676" y="230">receives scope, never identity or policy</text>
-
-      <!-- arrows: clients → gateway → workers -->
-      <path class="arw" d="M240 180 H296" marker-end="url(#a1)"/>
-      <text class="al" x="246" y="170">signed</text>
-      <text class="al" x="246" y="198">event</text>
-      <path class="arw-link" d="M620 180 H656" marker-end="url(#a2)"/>
-      <text class="al" x="626" y="172">call</text>
-
-      <!-- providers -->
-      <path class="arw-dash" d="M810 250 V296" marker-end="url(#a3)"/>
-      <text class="al" x="822" y="274">OAuth + API</text>
-      <rect class="n" x="660" y="300" width="300" height="80" rx="3"/>
-      <text class="t name" x="676" y="326">External providers</text>
-      <text class="t sub" x="676" y="346">LLM · Google Drive · Jira · IMAP</text>
-      <text class="m" x="676" y="364">token brokered per user, never in the prompt</text>
-
-      <!-- delivery -->
-      <path class="arw" d="M380 250 V296" marker-end="url(#a1)"/>
-      <path class="arw-dash" d="M540 250 V296" marker-end="url(#a3)"/>
-      <rect class="n" x="300" y="300" width="180" height="80" rx="3"/>
-      <text class="t name" x="314" y="326">In the chat</text>
-      <text class="t sub" x="314" y="346">aggregates only</text>
-      <text class="m" x="314" y="364">"3 CV mới"</text>
-      <rect class="n" x="500" y="300" width="140" height="80" rx="3"/>
-      <text class="t name" x="514" y="326">By DM</text>
-      <text class="t sub" x="514" y="346">personal</text>
-      <text class="t sub" x="514" y="364">third-party</text>
-
-      <!-- state -->
-      <text class="eyebrow" x="60" y="426">STATE · SERVER SIDE · READ AT START, APPENDED PER DECISION</text>
-      <rect class="n" x="60" y="440" width="1160" height="62" rx="3"/>
-      <text class="t sub" x="80" y="466">policy.json</text>
-      <text class="t sub" x="260" y="466">providers.json</text>
-      <text class="t sub" x="470" y="466">consent.json</text>
-      <text class="t sub" x="660" y="466">tokens.db</text>
-      <text class="t sub" x="820" y="466">jobs.db</text>
-      <text class="t sub" x="960" y="466">audit.log</text>
-      <text class="m" x="80" y="490">tool lists per chat · auth type + scopes per provider · who granted what · encrypted tokens · queue state · JSONL decisions</text>
+      <rect class="n" x="16" y="96" width="168" height="68" rx="4"/>
+      <text class="t name" x="28" y="118" text-anchor="start">chat platform</text>
+      <text class="t sub" x="28" y="134" text-anchor="start">a signed event in, one</text>
+      <text class="t sub" x="28" y="146" text-anchor="start">answer out</text>
+      <rect class="n" x="16" y="182" width="168" height="68" rx="4"/>
+      <text class="t name" x="28" y="204" text-anchor="start">operator console</text>
+      <text class="t sub" x="28" y="220" text-anchor="start">Vite + React behind nginx:</text>
+      <text class="t sub" x="28" y="232" text-anchor="start">one origin, no CORS</text>
+      <rect class="n" x="16" y="268" width="168" height="68" rx="4"/>
+      <text class="t name" x="28" y="290" text-anchor="start">harness</text>
+      <text class="t sub" x="28" y="306" text-anchor="start">dsh · any client with a</text>
+      <text class="t sub" x="28" y="318" text-anchor="start">base URL and a key</text>
+      <text class="t m" x="16" y="84" text-anchor="start">CALLERS</text>
+      <rect class="focal" x="210" y="60" width="486" height="540" rx="4"/>
+      <text class="t name" x="228" y="86" text-anchor="start">gateway-go</text>
+      <text class="t m" x="228" y="102" text-anchor="start">THE GATEWAY AND PROXY · Go 1.26 · 88 tests</text>
+      <text class="t sub" x="228" y="118" text-anchor="start">The only component with authority. It knows policy, consent, roles, quota and</text>
+      <text class="t sub" x="228" y="132" text-anchor="start">cache; it does not know how to read a PDF, query a warehouse or talk to a</text>
+      <text class="t sub" x="228" y="146" text-anchor="start">provider.</text>
+      <rect class="n" x="228" y="180" width="450" height="58" rx="3"/>
+      <text class="t m" x="240" y="196" text-anchor="start">/v1/respond</text>
+      <text class="t sub" x="240" y="212" text-anchor="start">one chat turn: resolve identity → filter tools → answer</text>
+      <rect class="n" x="228" y="246" width="450" height="58" rx="3"/>
+      <text class="t m" x="240" y="262" text-anchor="start">/v1/chat/completions · /v1/models</text>
+      <text class="t sub" x="240" y="278" text-anchor="start">one credential for a harness; a model id not in policy is refused before any</text>
+      <text class="t sub" x="240" y="290" text-anchor="start">provider is asked</text>
+      <rect class="n" x="228" y="312" width="450" height="58" rx="3"/>
+      <text class="t m" x="240" y="328" text-anchor="start">/mcp</text>
+      <text class="t sub" x="240" y="344" text-anchor="start">the tool protocol in, one decision out</text>
+      <rect class="n" x="228" y="378" width="450" height="58" rx="3"/>
+      <text class="t m" x="240" y="394" text-anchor="start">/v1/whoami · /me · /admin/*</text>
+      <text class="t sub" x="240" y="410" text-anchor="start">why a tool is hidden; issue, rotate, revoke</text>
+      <rect class="grp" x="228" y="450" width="450" height="64" rx="3"/>
+      <text class="t m" x="240" y="470" text-anchor="start">/state/tokens.json (+ seed)</text>
+      <text class="t sub" x="240" y="486" text-anchor="start">state, not a file in the checkout: temp+rename needs a writable directory, and</text>
+      <text class="t sub" x="240" y="498" text-anchor="start">the container runs as its own uid</text>
+      <text class="t sub" x="240" y="508" text-anchor="start">issue once · list masked · lost means rotate</text>
+      <path class="arw" d="M186 130 H208" marker-end="url(#a1)"/>
+      <text class="al" x="188" y="124" text-anchor="start">event</text>
+      <path class="arw" d="M186 216 H208" marker-end="url(#a1)"/>
+      <text class="al" x="188" y="210" text-anchor="start">token</text>
+      <path class="arw" d="M186 302 H208" marker-end="url(#a1)"/>
+      <text class="al" x="188" y="296" text-anchor="start">token</text>
+      <rect class="n" x="730" y="88" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="108" text-anchor="start">mcp-demo</text>
+      <text class="t sub" x="742" y="123" text-anchor="start">salary, documents, status — the tools a</text>
+      <text class="t sub" x="742" y="135" text-anchor="start">demo needs</text>
+      <rect class="n" x="730" y="152" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="172" text-anchor="start">ocr</text>
+      <text class="t sub" x="742" y="187" text-anchor="start">PDF text + image OCR: submit, then read a</text>
+      <text class="t sub" x="742" y="199" text-anchor="start">job · no policy, no identity</text>
+      <rect class="n" x="730" y="216" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="236" text-anchor="start">userdir</text>
+      <text class="t sub" x="742" y="251" text-anchor="start">who exists, and whether they may act ·</text>
+      <text class="t sub" x="742" y="263" text-anchor="start">Postgres or SQLite</text>
+      <rect class="n" x="730" y="280" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="300" text-anchor="start">model-mcp</text>
+      <text class="t sub" x="742" y="315" text-anchor="start">the model as a service: one turn in, one</text>
+      <text class="t sub" x="742" y="327" text-anchor="start">turn out · holds the provider key</text>
+      <rect class="n" x="730" y="344" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="364" text-anchor="start">clickhouse</text>
+      <text class="t sub" x="742" y="379" text-anchor="start">ch_schema · nlp_ask (SQL + rows) · raw</text>
+      <text class="t sub" x="742" y="391" text-anchor="start">ch_query is owner-only</text>
+      <rect class="n" x="730" y="408" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="428" text-anchor="start">audit-sink</text>
+      <text class="t sub" x="742" y="443" text-anchor="start">one audit view for several gateways · HTTP</text>
+      <text class="t sub" x="742" y="455" text-anchor="start">+ SQLite</text>
+      <rect class="n" x="730" y="472" width="246" height="56" rx="4"/>
+      <text class="t name" x="742" y="492" text-anchor="start">mcp-ts-example</text>
+      <text class="t sub" x="742" y="507" text-anchor="start">a tool service in TypeScript: the boundary</text>
+      <text class="t sub" x="742" y="519" text-anchor="start">is the protocol</text>
+      <text class="t m" x="730" y="80" text-anchor="start">SERVICES BEHIND MCP · each can be lifted out</text>
+      <path class="arw" d="M696 300 H720" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 117 V499" />
+      <path class="arw" d="M720 116.0 H728" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 180.0 H728" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 244.0 H728" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 308.0 H728" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 372.0 H728" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 436.0 H728" marker-end="url(#a1)"/>
+      <path class="arw" d="M720 500.0 H728" marker-end="url(#a1)"/>
+      <rect class="n" x="1014" y="88" width="250" height="76" rx="4"/>
+      <text class="t m" x="1026" y="110" text-anchor="start">Postgres</text>
+      <text class="t sub" x="1026" y="126" text-anchor="start">users, roles, usage counters — the shared</text>
+      <text class="t sub" x="1026" y="138" text-anchor="start">backend when one gateway is not enough</text>
+      <rect class="n" x="1014" y="180" width="250" height="76" rx="4"/>
+      <text class="t m" x="1026" y="202" text-anchor="start">ClickHouse</text>
+      <text class="t sub" x="1026" y="218" text-anchor="start">analytics data, read-only user, aggregate</text>
+      <text class="t sub" x="1026" y="230" text-anchor="start">materialised views</text>
+      <rect class="n" x="1014" y="272" width="250" height="76" rx="4"/>
+      <text class="t m" x="1026" y="294" text-anchor="start">audit SQLite</text>
+      <text class="t sub" x="1026" y="310" text-anchor="start">append-only, one file per gateway</text>
+      <text class="t m" x="1014" y="80" text-anchor="start">STATE — WRITTEN, NEVER AUTHORITATIVE</text>
+      <path class="arw-dash" d="M976 244 H988 V126 H1012" marker-end="url(#a3)"/>
+      <path class="arw-dash" d="M976 372 H988 V218 H1012" marker-end="url(#a3)"/>
+      <path class="arw-dash" d="M976 436 H988 V310 H1012" marker-end="url(#a3)"/>
+      <rect class="n" x="730" y="544" width="246" height="64" rx="4"/>
+      <text class="t m" x="742" y="566" text-anchor="start">model provider</text>
+      <text class="t sub" x="742" y="582" text-anchor="start">an OpenAI-shaped HTTP endpoint; the key</text>
+      <text class="t sub" x="742" y="594" text-anchor="start">lives in model-mcp, never in a client</text>
+      <path class="arw" d="M853.0 336 V542" marker-end="url(#a1)"/>
     </svg>
-    <figcaption>
-      <b>Figure 1.</b> Four decisions in one picture: identity comes from a signed event on the chat
-      platform; authority is decided by the gateway and <i>filtered before</i> the model ever sees a tool
-      list; a worker holds no identity and no platform key; and personal or third-party data only travels
-      by DM, while a group only receives aggregate answers. Adding a tool widens nobody's authority — it
-      adds one line to <code>policy.json</code> and one line to the audit log.
-    </figcaption>
   </figure>
+  <figcaption><b>One gateway, seven services, three stores.</b> Everything a caller can do is a service behind MCP; the gateway is the only place that decides whether it may happen. The dotted lines are writes — a store can be read at any time, but it never makes a decision. <i>What this does not show:</i> the Python reference gateway, which exists to keep the Go one honest (see README).</figcaption>
 </main>
-<!-- diagram-meta {"sources": ["services/gateway-go/policy.go", "services/gateway-go/server.go", "config/policy.json", "services/console/src/App.tsx"], "updated": "2026-11-15"} -->
 </body>
 </html>

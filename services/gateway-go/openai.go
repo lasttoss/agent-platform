@@ -69,6 +69,10 @@ func (s *Server) openAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) openAIChat(w http.ResponseWriter, r *http.Request) {
+	// One run id per chat call, on the response and in every audit line this call writes.
+	ctx, run := runIDInto(r.Context(), r)
+	r = r.WithContext(ctx)
+	w.Header().Set(runIDHeader, run)
 	pal, ok := s.principal(r)
 	if !ok {
 		openAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid or missing token")
@@ -76,7 +80,7 @@ func (s *Server) openAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok, retry := s.limiter.allow(pal.UserID); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
-		s.audit(map[string]any{"event": "openai_rate_limited", "user": pal.UserID,
+		s.auditRun(ctx, map[string]any{"event": "openai_rate_limited", "user": pal.UserID,
 			"retry_after_s": retry, "at": time.Now().UTC().Format(time.RFC3339)})
 		openAIError(w, http.StatusTooManyRequests, "rate_limited", "retry in "+fmt.Sprint(retry)+"s")
 		return
@@ -97,14 +101,14 @@ func (s *Server) openAIChat(w http.ResponseWriter, r *http.Request) {
 		model = s.Policy.Models.Default
 	}
 	if !s.Policy.ModelAllowed(pal, model) {
-		s.audit(map[string]any{"event": "openai_model_denied", "user": pal.UserID,
+		s.auditRun(ctx, map[string]any{"event": "openai_model_denied", "user": pal.UserID,
 			"model": model, "at": time.Now().UTC().Format(time.RFC3339)})
 		openAIError(w, http.StatusNotFound, "model_not_found",
 			fmt.Sprintf("model %q is not in this caller's whitelist", model))
 		return
 	}
 	if s.overQuota(pal.UserID) {
-		s.audit(map[string]any{"event": "openai_quota_exceeded", "user": pal.UserID,
+		s.auditRun(ctx, map[string]any{"event": "openai_quota_exceeded", "user": pal.UserID,
 			"at": time.Now().UTC().Format(time.RFC3339)})
 		openAIError(w, http.StatusTooManyRequests, "insufficient_quota", "daily quota reached")
 		return
@@ -118,7 +122,7 @@ func (s *Server) openAIChat(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	turn, err := s.Reg.Complete(system, user, req.Tools, model)
 	if err != nil {
-		s.audit(map[string]any{"event": "openai_model_error", "user": pal.UserID, "model": model,
+		s.auditRun(ctx, map[string]any{"event": "openai_model_error", "user": pal.UserID, "model": model,
 			"error": err.Error(), "at": time.Now().UTC().Format(time.RFC3339)})
 		openAIError(w, http.StatusBadGateway, "upstream_error", err.Error())
 		return
@@ -135,7 +139,7 @@ func (s *Server) openAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	s.chargeRequest(pal.UserID)
 	s.chargeTokens(pal.UserID, promptTokens+completionTokens)
-	s.audit(map[string]any{"event": "openai_chat", "user": pal.UserID, "role": pal.Role,
+	s.auditRun(ctx, map[string]any{"event": "openai_chat", "user": pal.UserID, "role": pal.Role,
 		"model": model, "prompt_tokens": promptTokens, "completion_tokens": completionTokens,
 		"estimated": estimated, "tool_calls": len(turn.ToolCalls),
 		"ms": int(time.Since(started).Milliseconds()), "at": time.Now().UTC().Format(time.RFC3339)})

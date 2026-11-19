@@ -12,9 +12,13 @@ caller can actually do is an MCP service** — including the model. The gateway 
 extraction code, no mail client and no provider SDK. Adding a capability means starting a
 service, not adding a branch.
 
+Each audit line carries a `run_id`, so the durable record can answer "what happened to *this*
+request, in order" — see `docs/operations.md`. Where the ideas came from, and how this repo answers
+them differently, is in `docs/DECISIONS.md`, including the one thing it does *not* implement.
+
 **Status: research notes, not production software.** Written to understand the problem and to be
-explained out loud; no support, no SLA, no deployment story. 204 tests: Go gateway 88, Python
-reference gateway 45, ClickHouse service 29, OCR 21, userdir 8, audit sink 7, model service 6.
+explained out loud; no support, no SLA, no deployment story. 211 tests: Go gateway 92, Python
+reference gateway 45, ClickHouse 29, OCR 21, userdir 8, audit sink 10, model service 6.
 Everything that identifies a real person or a real amount lives outside git, in `config/local.json`.
 
 ## Verify in 60 seconds

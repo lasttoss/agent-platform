@@ -200,3 +200,35 @@ docker compose stop gateway && docker exec <pg> psql -U postgres -d agent -c "de
 Measured while doing it: after a delete-and-restart the row came back at 49 requests / 202,848
 tokens even though the table had been empty, and `/v1/chat/completions` kept answering
 `429 insufficient_quota` with zero rows in the database.
+
+## Following one request through the record
+
+Every audit line carries a `run_id`: an opaque 128-bit value that joins the steps of one piece of
+work. The trace id cannot do this job, because a trace is sampled, exported to a third party, and
+gone in a week, while the audit file is what survives.
+
+```
+caller sends X-Run-Id: my-run-1        -> the gateway keeps it (if well formed) and echoes it back
+caller sends nothing                   -> the gateway mints one per request
+```
+
+The response header carries the id in both cases, so a person reporting a problem can quote one
+value instead of describing the request from memory.
+
+```
+curl "http://audit-sink:8096/v1/run?run_id=my-run-1"
+```
+
+returns the steps of that run in order: event, user, role, tool, cache outcome, reason. Lines
+written outside a request (a startup note, a directory refresh) carry no run id rather than a fake
+one.
+
+Two rules that keep the join key from becoming something else:
+
+- A run id is not an authorisation. It says these steps belong together; it never says who may run
+  them.
+- A caller's value is used only when it is bounded and printable. A hostile value is replaced, not
+  sanitised: a cleaned-up version is a value the caller never sent.
+
+The daily report counts both `events` and `runs`: the second number is what a person compares to
+yesterday, because one piece of work is several events.

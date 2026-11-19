@@ -87,5 +87,35 @@ class SinkTests(unittest.TestCase):
         self.assertEqual(self.mod.STORE.report("2026-11-12")["denied_rate"], 0.5)
 
 
+    def test_a_run_comes_back_in_order_with_its_steps(self) -> None:
+        store = self.mod.STORE
+        store.add([
+            {"event": "mcp_tools_list", "run_id": "r1", "user": "1001", "ts": "2026-11-19T10:00:00Z",
+             "event_id": "e1"},
+            {"event": "mcp_call", "run_id": "r1", "user": "1001", "tool": "echo", "cache": "hit",
+             "ts": "2026-11-19T10:00:01Z", "event_id": "e2"},
+            {"event": "mcp_call", "run_id": "r2", "user": "1001", "tool": "docs_search",
+             "ts": "2026-11-19T10:00:02Z", "event_id": "e3"},
+        ])
+        out = store.run("r1")
+        self.assertEqual(out["count"], 2, out)
+        self.assertEqual([e["event"] for e in out["events"]], ["mcp_tools_list", "mcp_call"])
+        self.assertEqual(out["events"][1]["cache"], "hit", out)
+
+    def test_a_run_id_from_another_person_is_not_merged_in(self) -> None:
+        """The run id joins steps; it never widens who may read them. Two runs stay two."""
+        store = self.mod.STORE
+        store.add([
+            {"event": "mcp_call", "run_id": "r1", "user": "1001", "ts": "2026-11-19T10:00:00Z"},
+            {"event": "mcp_call", "run_id": "r9", "user": "2002", "ts": "2026-11-19T10:00:01Z"},
+        ])
+        self.assertEqual(store.run("r1")["count"], 1)
+        self.assertEqual(store.run("r9")["count"], 1)
+
+    def test_an_unknown_run_is_empty_not_an_error(self) -> None:
+        store = self.mod.STORE
+        out = store.run("never-existed")
+        self.assertEqual(out["count"], 0, out)
+        self.assertEqual(out["events"], [])
 if __name__ == "__main__":
     unittest.main()

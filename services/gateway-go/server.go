@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -187,6 +188,13 @@ func (s *Server) audit(rec map[string]any) {
 // One request slot per caller turn, tokens as they are actually spent. The two are counted
 // separately: charging a request inside the model branch halved the daily quota whenever a
 // model service was attached — a bug parity found at 300 generated cases, not at 10.
+// auditRun is audit with the run id of the request it belongs to. Every line written while
+// serving a caller goes through this one; audit stays for lines that belong to no request (a
+// startup note, a directory refresh), which have no run to join.
+func (s *Server) auditRun(ctx context.Context, rec map[string]any) {
+	s.audit(withRunID(ctx, rec))
+}
+
 func (s *Server) chargeRequest(userID string) {
 	s.mu.Lock()
 	if s.usage[userID] == nil {
@@ -362,28 +370,34 @@ func scopeFor(pal Principal, tool string, meta map[string]ToolMeta) string {
 
 // Handle is the whole decision path: identity → quota → which tools exist → cache → tool → delivery.
 func (s *Server) Handle(req respondRequest) (int, map[string]any) {
+	return s.HandleCtx(context.Background(), req)
+}
+
+// HandleCtx carries the run id from the HTTP request into every line this call writes. The
+// adapter path calls Handle (no request context, no run) and keeps working unchanged.
+func (s *Server) HandleCtx(ctx context.Context, req respondRequest) (int, map[string]any) {
 	// Same bucket as /mcp: a limit that only covers one door is a suggestion.
 	if ok, retry := s.limiter.allow(req.PlatformUserID); !ok {
-		s.audit(map[string]any{"event": "rate_limited", "user": req.PlatformUserID,
+		s.auditRun(ctx, map[string]any{"event": "rate_limited", "user": req.PlatformUserID,
 			"retry_after_s": retry, "at": time.Now().UTC().Format(time.RFC3339)})
 		return http.StatusTooManyRequests, map[string]any{
 			"denied": map[string]any{"code": "rate_limited",
 				"reason": fmt.Sprintf("retry in %ds", retry)}, "retry_after_s": retry}
 	}
 	if allowed, code, detail := s.directoryVerdict(req.PlatformUserID); !allowed {
-		s.audit(map[string]any{"user": req.PlatformUserID, "chat": req.ChatType,
+		s.auditRun(ctx, map[string]any{"user": req.PlatformUserID, "chat": req.ChatType,
 			"decision": "denied", "code": code})
 		return 403, map[string]any{"denied": map[string]any{"code": code, "reason": detail}}
 	}
 	pal, err := s.Policy.Resolve(req.PlatformUserID, req.ChatType)
 	if err != nil {
 		d := err.(Denied)
-		s.audit(map[string]any{"user": req.PlatformUserID, "chat": req.ChatType,
+		s.auditRun(ctx, map[string]any{"user": req.PlatformUserID, "chat": req.ChatType,
 			"decision": "denied", "code": d.Code})
 		return 403, map[string]any{"denied": map[string]any{"code": d.Code, "reason": d.Message}}
 	}
 	if s.overQuota(pal.UserID) {
-		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType, "decision": "quota_exceeded"})
+		s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType, "decision": "quota_exceeded"})
 		return 429, map[string]any{"denied": map[string]any{"code": "quota_exceeded",
 			"reason": "daily quota reached"}}
 	}
@@ -402,7 +416,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 		// Configured in policy, but no running service advertises it. Answering "I have no tool
 		// for this" would be a lie of the wrong kind: the capability exists, it is down.
 		if !s.Reg.Advertises(tool) && s.Policy.ConfiguredFor(pal, tool, s.Reg.Meta, s.Consent) {
-			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+			s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "tool_unavailable", "tool": tool})
 			return 503, map[string]any{"denied": map[string]any{
 				"code": "service_unavailable", "reason": "no service advertises " + tool}}
@@ -412,14 +426,14 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	key := ExactKey(req.Text, visible, PolicyVersion, pal.ChatType, scope)
 	if ttl > 0 {
 		if hit, ok := s.Cache.GetExact(key); ok {
-			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+			s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "cache_exact", "scope": scope, "tool": tool})
 			return 200, map[string]any{"delivered": "chat", "chat_reply": hit.Answer,
 				"dm": nil, "tools_visible": visible,
 				"cache": map[string]any{"layer": "exact", "saved_tokens": hit.Saved}}
 		}
 		if hit, sim, ok := s.Cache.GetSemantic(req.Text, scope, tool); ok {
-			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+			s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "cache_semantic", "scope": scope, "tool": tool})
 			return 200, map[string]any{"delivered": "chat", "chat_reply": hit.Answer,
 				"dm": nil, "tools_visible": visible,
@@ -448,7 +462,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 					}
 				}
 				if blocked != "" {
-					s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+					s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 						"decision": "tool_not_allowed", "tool": blocked, "offered": visible})
 					return 200, map[string]any{"delivered": "chat", "dm": nil,
 						"chat_reply":  "I don't have permission to do that here.",
@@ -457,7 +471,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 				}
 				tool, args, matched = turn.ToolCalls[0].Name, turn.ToolCalls[0].Args, true
 			} else if turn.Content != "" && s.Policy.FreeChat(pal) {
-				s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+				s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 					"decision": "free_chat", "tools_visible": visible})
 				return 200, map[string]any{"delivered": "chat", "chat_reply": turn.Content,
 					"dm": nil, "tools_visible": visible, "tools_offered": len(schemas)}
@@ -466,7 +480,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	}
 
 	if !matched {
-		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+		s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "no_tool", "tools_visible": visible})
 		return 200, map[string]any{"delivered": "chat",
 			"chat_reply": "I have no tool for that.", "dm": nil,
@@ -478,7 +492,7 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	if tool == "ocr_result" {
 		id := s.pendingJob(pal)
 		if id == "" {
-			s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+			s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "no_tool", "tool": tool, "reason": "no_pending_job"})
 			return 200, map[string]any{"delivered": "chat", "dm": nil,
 				"chat_reply":    "No extraction job is pending. Send me a document first.",
@@ -491,14 +505,14 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	mode, err := s.Policy.Decide(pal, tool, meta, known)
 	if err != nil {
 		d := err.(Denied)
-		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+		s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "denied", "code": d.Code, "tool": tool})
 		return 403, map[string]any{"denied": map[string]any{"code": d.Code, "reason": d.Message}}
 	}
 
 	release, admitted := s.acquire(tool, meta.MaxInFlight)
 	if !admitted {
-		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+		s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "shed", "tool": tool, "reason": "in_flight_limit"})
 		return 503, map[string]any{"denied": map[string]any{
 			"code": "service_busy", "reason": "too many calls in flight for " + tool}}
@@ -519,14 +533,14 @@ func (s *Server) Handle(req respondRequest) (int, map[string]any) {
 	}
 
 	if mode == "private" {
-		s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+		s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 			"decision": "private_delivery", "tool": tool})
 		return 200, map[string]any{"delivered": "dm",
 			"chat_reply":    "Sending that to you privately.",
 			"dm":            map[string]any{"text": answer, "reason": "personal_data_in_shared_chat"},
 			"tools_visible": visible}
 	}
-	s.audit(map[string]any{"user": pal.UserID, "chat": pal.ChatType,
+	s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 		"decision": "answered", "tool": tool})
 	return 200, map[string]any{"delivered": "chat", "chat_reply": answer, "dm": nil,
 		"tools_visible": visible}
@@ -787,7 +801,9 @@ func (s *Server) Routes() http.Handler {
 		if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
 			span.SetAttributes(attribute.String("gateway.chat", req.ChatType))
 		}
-		code, body := s.Handle(req)
+		ctx, run := runIDInto(r.Context(), r)
+		w.Header().Set(runIDHeader, run)
+		code, body := s.HandleCtx(ctx, req)
 		writeJSON(w, code, body)
 	})
 	return Traced(mux)

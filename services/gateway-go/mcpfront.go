@@ -110,8 +110,9 @@ func (f *MCPFront) whoami(r *http.Request) (Principal, bool) {
 	}
 	userID, ok, rep := f.tokens.Lookup(tok)
 	if len(rep.Added) > 0 || len(rep.Removed) > 0 {
-		f.srv.audit(map[string]any{"event": "mcp_tokens_rotated", "added": rep.Added,
-			"removed": rep.Removed, "at": time.Now().UTC().Format(time.RFC3339)})
+		f.srv.auditRun(r.Context(), map[string]any{"event": "mcp_tokens_rotated",
+			"added": rep.Added, "removed": rep.Removed,
+			"at": time.Now().UTC().Format(time.RFC3339)})
 	}
 	if !ok {
 		return Principal{}, false
@@ -191,6 +192,13 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if id := TraceID(ctx); id != "" {
 		w.Header().Set("X-Trace-Id", id)
 	}
+	// The run id joins the durable audit lines of one piece of work; the trace id cannot, because
+	// a trace is sampled and exported while the log file is what survives. A caller that sends a
+	// usable X-Run-Id keeps it, which is how several separate calls are stitched into one run.
+	var run string
+	ctx, run = runIDInto(ctx, r)
+	r = r.WithContext(ctx)
+	w.Header().Set(runIDHeader, run)
 	if r.Method != http.MethodPost {
 		// Streamable HTTP allows a GET SSE stream; this gateway does not offer one, and saying
 		// so is better than hanging a client that expects it.
@@ -200,7 +208,7 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	pal, ok := f.whoami(r)
 	if !ok {
-		f.srv.audit(map[string]any{"event": "mcp_auth_failed", "path": r.URL.Path,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_auth_failed", "path": r.URL.Path,
 			"at": time.Now().UTC().Format(time.RFC3339)})
 		writeJSON(w, http.StatusUnauthorized, rpcErr(nil, -32001, "unauthorized", nil))
 		return
@@ -223,7 +231,7 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Protocol   string         `json:"protocolVersion"`
 		}
 		json.Unmarshal(req.Params, &initParams)
-		f.srv.audit(map[string]any{"event": "mcp_initialize", "user": pal.UserID, "role": pal.Role,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_initialize", "user": pal.UserID, "role": pal.Role,
 			"client": initParams.ClientInfo, "protocol": initParams.Protocol,
 			"at": time.Now().UTC().Format(time.RFC3339)})
 		// Sessions are optional in MCP over HTTP, but some clients require the header. This
@@ -265,7 +273,7 @@ func (f *MCPFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// "Who asked to see what" is part of the audit, not a debug line: it is the only record
 		// that a tool existed for a role at a moment in time.
-		f.srv.audit(map[string]any{"event": "mcp_tools_list", "user": pal.UserID, "role": pal.Role,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_tools_list", "user": pal.UserID, "role": pal.Role,
 			"count": len(names), "tools": names, "at": time.Now().UTC().Format(time.RFC3339)})
 		f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{"tools": tools}))
 	case "tools/call":
@@ -296,7 +304,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	decision, err := f.srv.Policy.Decide(pal, params.Name, meta, known)
 	if err != nil {
 		f.bumpDenied(params.Name)
-		f.srv.audit(map[string]any{"event": "mcp_denied", "user": pal.UserID, "role": pal.Role,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_denied", "user": pal.UserID, "role": pal.Role,
 			"tool": params.Name, "reason": err.Error(), "at": time.Now().UTC().Format(time.RFC3339)})
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32003, "denied: "+err.Error(), nil))
 		return
@@ -306,7 +314,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	// should not spend the caller's allowance, and it must not reach the cache keyed by garbage.
 	if _, inputSchema, ok := f.srv.Reg.MCPToolDef(params.Name); ok {
 		if err := validateArgs(inputSchema, params.Arguments); err != nil {
-			f.srv.audit(map[string]any{"event": "mcp_invalid_args", "user": pal.UserID,
+			f.srv.auditRun(ctx, map[string]any{"event": "mcp_invalid_args", "user": pal.UserID,
 				"role": pal.Role, "tool": params.Name, "reason": err.Error(),
 				"at": time.Now().UTC().Format(time.RFC3339)})
 			f.emit(w, r, http.StatusOK,
@@ -321,7 +329,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.mu.Lock()
 		f.rateLimited++
 		f.mu.Unlock()
-		f.srv.audit(map[string]any{"event": "mcp_rate_limited", "user": pal.UserID,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_rate_limited", "user": pal.UserID,
 			"role": pal.Role, "tool": params.Name, "retry_after_s": retry,
 			"at": time.Now().UTC().Format(time.RFC3339)})
 		w.Header().Set("Retry-After", strconv.Itoa(retry))
@@ -336,7 +344,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.mu.Lock()
 		f.quotaDenied++
 		f.mu.Unlock()
-		f.srv.audit(map[string]any{"event": "mcp_quota_denied", "user": pal.UserID,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_quota_denied", "user": pal.UserID,
 			"role": pal.Role, "tool": params.Name, "at": time.Now().UTC().Format(time.RFC3339)})
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32004, "quota exceeded for today", nil))
 		return
@@ -349,7 +357,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		job, ok := f.jobs.create(pal.UserID, params.Name)
 		if !ok {
 			span.SetAttributes(attribute.String("gateway.outcome", "job_refused"))
-			f.srv.audit(map[string]any{"event": "mcp_job_refused", "user": pal.UserID,
+			f.srv.auditRun(ctx, map[string]any{"event": "mcp_job_refused", "user": pal.UserID,
 				"role": pal.Role, "tool": params.Name,
 				"at": time.Now().UTC().Format(time.RFC3339)})
 			f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32007,
@@ -361,19 +369,24 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.srv.chargeRequest(pal.UserID)
 		span.SetAttributes(attribute.String("gateway.job", job.ID[:8]),
 			attribute.String("gateway.outcome", "job"))
-		f.srv.audit(map[string]any{"event": "mcp_job_started", "user": pal.UserID,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_job_started", "user": pal.UserID,
 			"role": pal.Role, "tool": params.Name, "job": job.ID,
 			"at": time.Now().UTC().Format(time.RFC3339)})
 
 		go func() {
 			started := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), toolTimeout(meta))
+			// The goroutine outlives the request, so it cannot inherit the request's context --
+			// but it must not lose the run id either: the job's later lines are the same piece of
+			// work as the call that started it. Carry the value, not the cancellation.
+			runCtx, cancel := context.WithTimeout(context.WithValue(context.Background(),
+				runIDKey{}, RunID(r.Context())), toolTimeout(meta))
+			ctx := runCtx
 			defer cancel()
 			release, ok := f.srv.acquire(params.Name, meta.MaxInFlight)
 			if !ok {
 				err := fmt.Errorf("busy: %s is saturated", params.Name)
 				f.jobs.finish(job.ID, nil, err)
-				f.srv.audit(map[string]any{"event": "mcp_job_failed", "user": pal.UserID,
+				f.srv.auditRun(ctx, map[string]any{"event": "mcp_job_failed", "user": pal.UserID,
 					"role": pal.Role, "tool": params.Name, "job": job.ID, "error": err.Error(),
 					"ms": time.Since(started).Milliseconds(),
 					"at": time.Now().UTC().Format(time.RFC3339)})
@@ -393,7 +406,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 				rec["event"] = "mcp_job_failed"
 				rec["error"] = err.Error()
 			}
-			f.srv.audit(rec)
+			f.srv.auditRun(ctx, rec)
 		}()
 
 		body, _ := json.Marshal(map[string]any{"job_id": job.ID, "state": jobRunning,
@@ -423,7 +436,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 			f.mu.Unlock()
 			f.srv.chargeRequest(pal.UserID)
 			f.srv.chargeTokens(pal.UserID, estimateTokens(e.Answer))
-			f.srv.audit(map[string]any{"event": "mcp_call", "user": pal.UserID, "role": pal.Role,
+			f.srv.auditRun(ctx, map[string]any{"event": "mcp_call", "user": pal.UserID, "role": pal.Role,
 				"tool": params.Name, "cache": "hit", "at": time.Now().UTC().Format(time.RFC3339)})
 			f.emit(w, r, http.StatusOK, rpcOK(req.ID, map[string]any{
 				"content": []map[string]any{{"type": "text", "text": e.Answer}}}))
@@ -445,7 +458,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		f.mu.Lock()
 		f.busyDenied++
 		f.mu.Unlock()
-		f.srv.audit(map[string]any{"event": "mcp_busy", "user": pal.UserID, "role": pal.Role,
+		f.srv.auditRun(ctx, map[string]any{"event": "mcp_busy", "user": pal.UserID, "role": pal.Role,
 			"tool": params.Name, "at": time.Now().UTC().Format(time.RFC3339)})
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32005, "busy: "+params.Name+" is saturated", nil))
 		return
@@ -503,7 +516,7 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 	if callErr != nil {
 		rec["error"] = callErr.Error()
 	}
-	f.srv.audit(rec)
+	f.srv.auditRun(ctx, rec)
 	if callErr != nil {
 		f.emit(w, r, http.StatusOK, rpcErr(req.ID, -32000, callErr.Error(), nil))
 		return

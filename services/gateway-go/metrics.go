@@ -90,6 +90,12 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		line("# TYPE gateway_roles_generation gauge")
 		line("gateway_roles_generation %d", s.Roles.Generation())
 	}
+	// Access withdrawn: a token revoked or rotated, a person disabled. It is a counter because the
+	// question is "how many times has access been taken away", and a cache key is not a place to
+	// put a timestamp that two revocations in one second would share.
+	line("# HELP gateway_access_withdrawn_total Cached answers retired because access was withdrawn.")
+	line("# TYPE gateway_access_withdrawn_total counter")
+	line("gateway_access_withdrawn_total %d", s.revocationGeneration())
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Write([]byte(b.String()))

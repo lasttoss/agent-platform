@@ -108,8 +108,11 @@ func (s *Server) meRotate(w http.ResponseWriter, r *http.Request) {
 		writeAdmin(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.audit(map[string]any{"event": "token_rotated", "user": pal.UserID, "by": "self",
-		"at": time.Now().UTC().Format(time.RFC3339)})
+	// The old token is dead; the answers it paid for must be too. Otherwise a rotation that was
+	// done *because* the token leaked keeps serving the data the leak was about.
+	n := s.bumpRevocation(r.Context(), "token_rotated")
+	s.auditRun(r.Context(), map[string]any{"event": "token_rotated", "user": pal.UserID, "by": "self",
+		"revocations": n, "at": time.Now().UTC().Format(time.RFC3339)})
 	writeAdmin(w, http.StatusOK, map[string]any{
 		"token": fresh, "masked": maskToken(fresh), "user": pal.UserID,
 		"note": "the previous token stops working now; this one is shown once",
@@ -189,7 +192,9 @@ func (s *Server) adminTokens(w http.ResponseWriter, r *http.Request) {
 				writeAdmin(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 				return
 			}
-			s.audit(map[string]any{"event": "token_revoked", "user": user, "by": pal.UserID,
+			n := s.bumpRevocation(r.Context(), "token_revoked")
+			s.auditRun(r.Context(), map[string]any{"event": "token_revoked", "user": user,
+				"by": pal.UserID, "revocations": n,
 				"at": time.Now().UTC().Format(time.RFC3339)})
 			writeAdmin(w, http.StatusOK, map[string]any{"revoked": id, "user": user})
 			return

@@ -88,7 +88,8 @@ func testGatewayOpts(t *testing.T, upstreamCalls *int32, delay time.Duration, re
       "users": {"1001": {"name":"Owner","role":"owner","workspace":"d"},
                 "2002": {"name":"Dev","role":"dev","workspace":"d"},
                 "3003": {"name":"Dev2","role":"dev","workspace":"d"}},
-      "roles": {"owner": {"tools":["*"],"admin":true}, "dev": {"tools":["echo","personal_echo","strict"]}},
+      "roles": {"owner": {"tools":["*"],"admin":true}, "dev": {"tools":["echo","personal_echo","strict"]},
+                "guest": {"tools":["status"]}},
       "chats": {"dm": {"tools":["echo","personal_echo","write_thing","strict"], "personal_data": true, "free_chat": true}},
       "quota": {"requests_per_day": %d, "tokens_per_day": 100000,
                 "requests_per_minute": %d, "burst": %d}

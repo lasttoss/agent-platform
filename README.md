@@ -17,7 +17,7 @@ request, in order" — see `docs/operations.md`. Where the ideas came from, and 
 them differently, is in `docs/DECISIONS.md`, including the one thing it does *not* implement.
 
 **Status: research notes, not production software.** Written to understand the problem and to be
-explained out loud; no support, no SLA, no deployment story. 211 tests: Go gateway 92, Python
+explained out loud; no support, no SLA, no deployment story. 217 tests: Go gateway 98, Python
 reference gateway 45, ClickHouse 29, OCR 21, userdir 8, audit sink 10, model service 6.
 Everything that identifies a real person or a real amount lives outside git, in `config/local.json`.
 
@@ -25,7 +25,7 @@ Everything that identifies a real person or a real amount lives outside git, in 
 
 ```bash
 git clone https://github.com/lasttoss/agent-platform && cd agent-platform
-make test           # 204 tests: Go gateway 88, Python services 116 — no network, no keys
+make test           # 217 tests: Go gateway 98, Python services 119 — no network, no keys
 make compose-smoke  # starts the stack, then asserts the gateway refuses a token it should refuse
 ```
 
@@ -67,7 +67,7 @@ HTTP/MCP only.
 ## Run
 
 ```bash
-make test              # 204 tests, no network, no keys
+make test              # 217 tests, no network, no keys
 make run-mcp-demo      # 127.0.0.1:8091  demo tools (MCP)
 make run-ocr           # 127.0.0.1:8099  OCR service (MCP) + REST for the queue
 make run-model         # 127.0.0.1:8097  model service (MCP, mock until MODEL_BASE_URL is set)
@@ -369,8 +369,8 @@ refused. The hook is a backstop, not the rule — the rule is that real values h
 ## Tests
 
 ```
-make test     # 140 tests: 54 gateway-go, 45 Python reference gateway, 21 ocr, 8 userdir,
-              #            7 audit-sink, 5 model service
+make test     # 217 tests: 98 gateway-go, 45 Python reference gateway, 21 ocr, 8 userdir,
+              #            10 audit-sink, 6 model service
 make parity   # starts both gateways + the MCP services, diffs the decisions (10 + 60 generated)
 PARITY_FUZZ=300 python3 scripts/parity.py   # same, 300 generated cases
 ```

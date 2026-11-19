@@ -232,3 +232,31 @@ Two rules that keep the join key from becoming something else:
 
 The daily report counts both `events` and `runs`: the second number is what a person compares to
 yesterday, because one piece of work is several events.
+
+## Withdrawing access takes effect on the next request
+
+Three things withdraw access, and all three move the same counter:
+
+```
+POST   /admin/tokens/{id}   DELETE           a token is revoked
+POST   /me/token/rotate                      your own token is rotated
+       userdir says active: false            a person is disabled in the directory
+POST   /admin/users/{subject}/role           a role is demoted (moves the role generation instead)
+```
+
+Every cache key carries both numbers: the role generation and the withdrawal counter. So the
+answer "the console said the permission is gone" and the answer "the old reply is still being
+served" cannot both be true.
+
+```
+curl -s localhost:8090/metrics | grep gateway_access_withdrawn_total
+```
+
+Two numbers rather than one because they answer different questions. The role generation says
+*what this person may do now*; the withdrawal counter says *has this person's access been taken
+away*. Merging them makes a debugging session read the wrong answer, and a counter is used instead
+of a timestamp because two revocations in one second must not look identical.
+
+Both doors apply the console's role, not just the MCP front. Before that was true, a demotion made
+in the console applied to one door and not the other — worse than having no console, because it
+looks like it worked.

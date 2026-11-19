@@ -92,6 +92,11 @@ type Server struct {
 	// effort, never blocking a request, and losing a delivery must not lose the line.
 	auditQ       chan []byte
 	auditDropped atomic.Int64
+
+	// revocations counts the decisions that withdraw access: a token revoked, a token rotated, a
+	// person disabled in the directory. It is part of every cache key, so "the permission is
+	// gone" and "the old answer is still being served" cannot both be true.
+	revocations atomic.Int64
 }
 
 var startedAt = time.Now()
@@ -253,6 +258,23 @@ func (s *Server) acquire(tool string, limit int) (func(), bool) {
 // refresh loop. A failure keeps the previous copy: an unreachable directory must not silently
 // re-enable everybody.
 func (s *Server) LoadDirectory(users map[string]bool) {
+	// A person who was active and is not any more has lost access. The cache must be told, or a
+	// disabled account keeps collecting answers from the entries their token paid for.
+	disabled := []string{}
+	s.mu.Lock()
+	for id, was := range s.dir {
+		now, stillListed := users[id]
+		if was && (!stillListed || !now) {
+			disabled = append(disabled, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range disabled {
+		n := s.bumpRevocation(context.Background(), "directory_disabled")
+		s.audit(map[string]any{"event": "directory_disabled", "user": id, "revocations": n,
+			"at": time.Now().UTC().Format(time.RFC3339)})
+	}
+
 	s.mu.Lock()
 	s.dir = users
 	s.dirLoaded = true
@@ -396,6 +418,13 @@ func (s *Server) HandleCtx(ctx context.Context, req respondRequest) (int, map[st
 			"decision": "denied", "code": d.Code})
 		return 403, map[string]any{"denied": map[string]any{"code": d.Code, "reason": d.Message}}
 	}
+	// The console outranks the file, and it has to outrank it on *both* doors. The MCP front has
+	// applied this since the console existed; the adapter path did not, so a demotion made in the
+	// console applied to one door and not the other -- which is worse than not having a console,
+	// because it looks like it worked.
+	if role, ok := s.effectiveRole(pal.UserID); ok {
+		pal.Role = role
+	}
 	if s.overQuota(pal.UserID) {
 		s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType, "decision": "quota_exceeded"})
 		return 429, map[string]any{"denied": map[string]any{"code": "quota_exceeded",
@@ -423,7 +452,10 @@ func (s *Server) HandleCtx(ctx context.Context, req respondRequest) (int, map[st
 		}
 		matched = false
 	}
-	key := ExactKey(req.Text, visible, PolicyVersion, pal.ChatType, scope)
+	// One stamp, used by both the read and the write below: a key built from a different string in
+	// the two places would fill the cache with entries nothing can ever find.
+	stamp := s.policyStamp()
+	key := ExactKey(req.Text, visible, stamp, pal.ChatType, scope)
 	if ttl > 0 {
 		if hit, ok := s.Cache.GetExact(key); ok {
 			s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
@@ -432,7 +464,7 @@ func (s *Server) HandleCtx(ctx context.Context, req respondRequest) (int, map[st
 				"dm": nil, "tools_visible": visible,
 				"cache": map[string]any{"layer": "exact", "saved_tokens": hit.Saved}}
 		}
-		if hit, sim, ok := s.Cache.GetSemantic(req.Text, scope, tool); ok {
+		if hit, sim, ok := s.Cache.GetSemantic(req.Text, scope+"|"+stamp, tool); ok {
 			s.auditRun(ctx, map[string]any{"user": pal.UserID, "chat": pal.ChatType,
 				"decision": "cache_semantic", "scope": scope, "tool": tool})
 			return 200, map[string]any{"delivered": "chat", "chat_reply": hit.Answer,
@@ -529,7 +561,7 @@ func (s *Server) HandleCtx(ctx context.Context, req respondRequest) (int, map[st
 	answer := render(tool, result, callErr)
 	if ttl > 0 && callErr == nil {
 		s.Cache.PutExact(key, CacheEntry{Answer: answer, TTL: ttl})
-		s.Cache.PutSemantic(req.Text, answer, 0, ttl, scope, tool)
+		s.Cache.PutSemantic(req.Text, answer, 0, ttl, scope+"|"+stamp, tool)
 	}
 
 	if mode == "private" {

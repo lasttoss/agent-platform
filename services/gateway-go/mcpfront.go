@@ -423,9 +423,9 @@ func (f *MCPFront) call(w http.ResponseWriter, r *http.Request, req mcpRequest, 
 		scope = "user:" + pal.UserID
 	}
 	key := hashKey(map[string]any{"tool": params.Name, "args": params.Arguments, "scope": scope,
-		// A role assignment must be visible immediately; the generation in the key retires
-		// every entry cached under the old permissions without walking the cache.
-		"gen": f.srv.policyGeneration()})
+		// A role assignment or a withdrawn token must be visible immediately; both numbers in the
+		// key retire every entry cached under the old permissions without walking the cache.
+		"gen": f.srv.policyGeneration(), "rev": f.srv.revocationGeneration()})
 	cacheable := meta.TTL > 0
 	if cacheable {
 		if e, hit := f.srv.Cache.GetExact(key); hit {

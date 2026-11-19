@@ -12,7 +12,13 @@ test("a demotion takes effect on the next MCP call", async ({ page, request }) =
   await page.getByLabel("bearer token").fill(ADMIN);
   await page.getByRole("button", { name: "Load" }).click();
 
-  const row = page.getByRole("listitem").filter({ hasText: SUBJECT });
+  // Two lists render list items and both can mention a subject id: the people list and the token
+  // list. Naming the list is what keeps this from being a strict-mode violation — the locator was
+  // matching whichever rendered last.
+  const row = page
+    .getByRole("list", { name: "people" })
+    .getByRole("listitem")
+    .filter({ hasText: SUBJECT });
   await expect(row).toBeVisible();
   const generation = await page.locator(".gen").textContent();
 

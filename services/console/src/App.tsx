@@ -186,7 +186,7 @@ export default function App() {
           {users.length === 0 ? (
             <p className="empty">{hasToken ? "Nobody provisioned." : "No token loaded."}</p>
           ) : (
-            <ul className="users">
+            <ul className="users" aria-label="people">
               {users.map((u) => (
                 <li className="user" key={u.subject}>
                   <div className="who">
@@ -298,7 +298,7 @@ export default function App() {
             {tokens.length === 0 ? (
               <p className="empty">No tokens in the file.</p>
             ) : (
-              <ul className="users">
+              <ul className="users" aria-label="tokens">
                 {tokens.map((row) => (
                   <li className="user" key={row.id}>
                     <div className="who">

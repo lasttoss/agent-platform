@@ -33,6 +33,7 @@ storage engine would be a second place for that clause to be forgotten.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,6 +165,140 @@ class Scoped:
             self._store._record(conn, self.user_id, self.user_id, "forget", deleted)
             return deleted
 
+    # -- compaction ------------------------------------------------------------------------
+    def compact(self, keep: int = 500, kind: str | None = None, digest: bool = True) -> dict:
+        """Move the least recently used rows to the archive, and leave one digest row behind.
+
+        Two decisions worth defending:
+
+        1. **The archive, not the bin.** Compaction exists so the searchable set stays small; it
+           is not a licence to lose a fact. Nothing here deletes anything -- `purge_archive` does
+           that, later, on purpose, with a name attached to the number.
+        2. **The digest names what moved, it does not summarise it.** Summarising needs a model,
+           and a model summary of forty facts is a new claim with no source. The digest is JSON:
+           how many, how old, how new, and the first twenty keys -- enough for the next turn to
+           know the facts exist and to call `restore` for the one it needs.
+
+        Ranking is by last *use*, taken from `memory_event`, falling back to `updated_at`. That
+        keeps the read path free of an extra write per row: the receipt written for auditing is
+        also the usage signal.
+        """
+        if keep < 1:
+            raise MemoryError("keep must be at least 1: compaction is not deletion")
+        kinds = ([kind] if kind
+                 else [r["kind"] for r in self._store.stats_for(self.user_id) if r["kind"] != "digest"])
+        report: dict = {"user_id": self.user_id, "kinds": []}
+        with self._store._conn() as conn:          # type: ignore[attr-defined]
+            for k in kinds:
+                row = conn.execute(
+                    """
+                    WITH use AS (
+                        SELECT max(at) AS last_read
+                          FROM memory_event
+                         WHERE subject_id = %s AND op IN ('get', 'search') AND rows > 0
+                    ), ranked AS (
+                        SELECT m.id, m.key, m.created_at, m.updated_at,
+                               coalesce(use.last_read, m.updated_at) AS last_use
+                          FROM memory m LEFT JOIN use ON true
+                         WHERE m.user_id = %s AND m.kind = %s
+                    )
+                    SELECT count(*) AS total FROM ranked
+                    """,
+                    (self.user_id, self.user_id, k),
+                ).fetchone()
+                total = int(row["total"])
+                if total <= keep:
+                    report["kinds"].append({"kind": k, "total": total, "archived": 0})
+                    continue
+
+                moved = conn.execute(
+                    """
+                    WITH use AS (
+                        SELECT max(at) AS last_read
+                          FROM memory_event
+                         WHERE subject_id = %s AND op IN ('get', 'search') AND rows > 0
+                    ), ranked AS (
+                        SELECT m.id, coalesce(use.last_read, m.updated_at) AS last_use
+                          FROM memory m LEFT JOIN use ON true
+                         WHERE m.user_id = %s AND m.kind = %s
+                    ), doomed AS (
+                        SELECT id FROM ranked ORDER BY last_use ASC, id ASC LIMIT %s
+                    ), gone AS (
+                        DELETE FROM memory WHERE id IN (SELECT id FROM doomed)
+                        RETURNING user_id, kind, key, body, hash, embedding, created_at, updated_at
+                    )
+                    INSERT INTO memory_archive
+                        (user_id, kind, key, body, hash, embedding, created_at, updated_at)
+                    SELECT user_id, kind, key, body, hash, embedding, created_at, updated_at FROM gone
+                    ON CONFLICT (user_id, kind, key) DO UPDATE
+                       SET body = EXCLUDED.body,
+                           hash = EXCLUDED.hash,
+                           embedding = EXCLUDED.embedding,
+                           updated_at = EXCLUDED.updated_at,
+                           archived_at = now()
+                    RETURNING key, created_at, updated_at
+                    """,
+                    (self.user_id, self.user_id, k, total - keep),
+                ).fetchall()
+
+                if digest and moved:
+                    keys = sorted(r["key"] for r in moved)
+                    body = json.dumps(
+                        {
+                            "archived": len(moved),
+                            "kind": k,
+                            "oldest": min(r["created_at"] for r in moved).isoformat(),
+                            "newest": max(r["updated_at"] for r in moved).isoformat(),
+                            "keys": keys[:20],
+                            "rest_of": max(0, len(keys) - 20),
+                            "restore_with": "Scoped.restore(kind, key)",
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if len(body.encode()) > BODY_LIMIT:
+                        body = json.dumps(
+                            {"archived": len(moved), "kind": k, "keys": keys[:5],
+                             "restore_with": "Scoped.restore(kind, key)"},
+                            sort_keys=True, separators=(",", ":"),
+                        )
+                    conn.execute(
+                        """
+                        INSERT INTO memory (user_id, kind, key, body, hash)
+                        VALUES (%s, 'digest', %s, %s, %s)
+                        ON CONFLICT (user_id, kind, key) DO UPDATE
+                           SET body = EXCLUDED.body, hash = EXCLUDED.hash, updated_at = now()
+                        """,
+                        (self.user_id, k, body, _hash(body)),
+                    )
+                self._store._record(conn, self.user_id, self.user_id, "compact", len(moved))
+                report["kinds"].append({"kind": k, "total": total, "archived": len(moved)})
+        return report
+
+    def restore(self, kind: str, key: str) -> bool:
+        """Bring one archived row back into the working set. The digest is how a caller knows
+        which key to ask for; this is how it asks."""
+        with self._store._conn() as conn:          # type: ignore[attr-defined]
+            row = conn.execute(
+                """
+                WITH moved AS (
+                    DELETE FROM memory_archive
+                     WHERE user_id = %s AND kind = %s AND key = %s
+                    RETURNING user_id, kind, key, body, hash, embedding
+                )
+                INSERT INTO memory (user_id, kind, key, body, hash, embedding)
+                SELECT user_id, kind, key, body, hash, embedding FROM moved
+                ON CONFLICT (user_id, kind, key) DO UPDATE
+                   SET body = EXCLUDED.body, hash = EXCLUDED.hash,
+                       embedding = EXCLUDED.embedding, updated_at = now()
+                RETURNING key
+                """,
+                (self.user_id, kind, key),
+            ).fetchone()
+            if row is not None:
+                self._store._record(conn, self.user_id, self.user_id, "restore", 1)
+        return row is not None
+
     def count(self, kind: str | None = None) -> int:
         sql = "SELECT count(*) AS n FROM memory WHERE user_id = %s"
         args: list[Any] = [self.user_id]
@@ -232,6 +367,44 @@ class Memory:
             ).fetchall()
             self._record(conn, actor_id, subject_id, "inspect", sum(r["rows"] for r in rows))
         return {"subject_id": subject_id, "kinds": [dict(r) for r in rows]}
+
+    def stats_for(self, user_id: str) -> list[dict]:
+        """One scope's kinds, for compaction. Cross-user, so it takes the identity explicitly."""
+        if not user_id:
+            raise MemoryError("stats_for needs a person, not an empty string")
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT kind, count(*) AS rows FROM memory WHERE user_id = %s GROUP BY kind",
+                (user_id,),
+            ).fetchall()]
+
+    def compact_all(self, keep: int = 500) -> list[dict]:
+        """Run compaction for every scope that is over the cap. Called by a job, never by a request."""
+        with self._conn() as conn:
+            scopes = [r["user_id"] for r in conn.execute(
+                "SELECT user_id FROM memory GROUP BY user_id HAVING count(*) > %s", (keep,)
+            ).fetchall()]
+        return [self.scope(u).compact(keep=keep) for u in scopes]
+
+    def purge_archive(self, days: int = 180) -> int:
+        """The only place rows are actually deleted. Separate, deliberate, and counted."""
+        if days < 1:
+            raise MemoryError("purging needs a retention in days")
+        with self._conn() as conn:
+            return conn.execute(
+                "DELETE FROM memory_archive WHERE archived_at < now() - make_interval(days => %s)",
+                (int(days),),
+            ).rowcount or 0
+
+    def archive_stats(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                """
+                SELECT user_id, count(*) AS rows, coalesce(sum(octet_length(body)), 0) AS body_bytes,
+                       min(archived_at) AS oldest
+                  FROM memory_archive GROUP BY user_id ORDER BY rows DESC LIMIT 20
+                """
+            ).fetchall()]
 
     def sweep(self) -> int:
         """Delete rows whose expiry has passed. Called by a job, never on the request path."""

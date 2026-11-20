@@ -50,3 +50,21 @@ CREATE TABLE IF NOT EXISTS memory_event (
 CREATE INDEX IF NOT EXISTS memory_event_subject_idx ON memory_event (subject_id, at DESC);
 CREATE INDEX IF NOT EXISTS memory_event_cross_idx
     ON memory_event (at DESC) WHERE actor_id <> subject_id;
+
+-- Compaction moves rows here instead of deleting them. The point is not to save bytes -- the bytes
+-- moved, they did not disappear -- it is to keep the *working* set small enough to search well while
+-- keeping the record intact. A memory store that silently drops facts is worse than one that grows.
+CREATE TABLE IF NOT EXISTS memory_archive (
+    id          bigserial   PRIMARY KEY,
+    user_id     text        NOT NULL,
+    kind        text        NOT NULL,
+    key         text        NOT NULL,
+    body        text        NOT NULL,
+    hash        text        NOT NULL,
+    embedding   halfvec({dim}),
+    created_at  timestamptz NOT NULL,
+    updated_at  timestamptz NOT NULL,
+    archived_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, kind, key)
+);
+CREATE INDEX IF NOT EXISTS memory_archive_scope_idx ON memory_archive (user_id, archived_at DESC);

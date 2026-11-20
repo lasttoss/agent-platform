@@ -52,13 +52,14 @@ def main() -> int:
                    pg_total_relation_size(c.oid) AS bytes,
                    (SELECT count(*) FROM pg_stat_user_tables s WHERE s.relid = c.oid) AS stat_rows
               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = 'public' AND c.relname IN ('memory', 'memory_event')
+             WHERE n.nspname = 'public' AND c.relname IN ('memory', 'memory_event', 'memory_archive')
              ORDER BY bytes DESC"""):
             print(f"  {r['name']:<14} {human(r['bytes']):>9}")
         total = float(rows(conn, """
             SELECT coalesce(sum(pg_total_relation_size(c.oid)), 0) AS bytes
               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = 'public' AND c.relname IN ('memory', 'memory_event')""")[0]["bytes"])
+             WHERE n.nspname = 'public' AND c.relname IN ('memory', 'memory_event', 'memory_archive')
+             """)[0]["bytes"])
         print(f"  {'total':<14} {human(total):>9}")
 
         print("\n== by kind ==")
@@ -90,6 +91,20 @@ def main() -> int:
         if total + year_bytes > BYTES_BUDGET:
             problems.append(f"the store would reach {human(total + year_bytes)} in a year, "
                             f"over the {human(BYTES_BUDGET)} budget")
+
+        print("\n== archive (compacted out of the working set) ==")
+        arch = rows(conn, """
+            SELECT kind, count(*) AS n, coalesce(sum(octet_length(body)), 0) AS bytes
+              FROM memory_archive GROUP BY kind ORDER BY n DESC""")
+        if not arch:
+            print("  empty")
+        for r in arch:
+            print(f"  {r['kind']:<14}{r['n']:>8} rows  {human(r['bytes']):>10}")
+        if arch:
+            purge = rows(conn, """
+                SELECT count(*) AS n FROM memory_archive
+                 WHERE archived_at < now() - interval '180 days'""")[0]["n"]
+            print(f"  older than 180 days: {purge} rows ready for purge_archive()")
 
         print("\n== reads, last 24 hours ==")
         for r in rows(conn, """

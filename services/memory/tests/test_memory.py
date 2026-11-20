@@ -34,6 +34,7 @@ def make_store() -> "mem.Memory":
         # or fail for a reason that has nothing to do with what it is checking.
         conn.execute("DROP TABLE IF EXISTS memory CASCADE")
         conn.execute("DROP TABLE IF EXISTS memory_event CASCADE")
+        conn.execute("DROP TABLE IF EXISTS memory_archive CASCADE")
     store.create_schema()
     return store
 
@@ -144,6 +145,85 @@ class MemoryTests(unittest.TestCase):
 
         self.assertEqual([h.key for h in self.alice.search(vec, kind="fact")], ["note"])
         self.assertEqual(self.alice.search(vec, kind="pref"), [])
+
+    # -- compaction ------------------------------------------------------------------------
+    def _archive(self, user_id: str) -> list[dict]:
+        with self.store._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT kind, key, body FROM memory_archive WHERE user_id = %s ORDER BY key",
+                (user_id,),
+            ).fetchall()]
+
+    def test_compaction_keeps_the_working_set_and_archives_the_rest(self) -> None:
+        """The searchable set stays small; the facts stay somewhere."""
+        for i in range(6):
+            self.alice.put("fact", f"f{i}", f"giá trị {i}")
+
+        report = self.alice.compact(keep=3)
+
+        self.assertEqual(report["kinds"][0]["archived"], 3)
+        self.assertEqual(self.alice.count("fact"), 3)
+        self.assertEqual(len(self._archive("alice")), 3)
+        # the three that stayed are the most recently written
+        self.assertEqual(sorted(self.alice.get("fact", f"f{i}") for i in (3, 4, 5)),
+                         ["giá trị 3", "giá trị 4", "giá trị 5"])
+
+    def test_compaction_names_what_it_moved_instead_of_summarising_it(self) -> None:
+        """A model summary of forty facts is a new claim with no source. The digest is JSON."""
+        import json as _json
+        for i in range(5):
+            self.alice.put("fact", f"f{i}", f"giá trị {i}")
+
+        self.alice.compact(keep=2)
+        digest = self.alice.get("digest", "fact")
+        self.assertIsNotNone(digest)
+        parsed = _json.loads(digest)
+        self.assertEqual(parsed["archived"], 3)
+        self.assertEqual(parsed["keys"], ["f0", "f1", "f2"])
+        self.assertLess(len(digest.encode()), mem.BODY_LIMIT)
+
+    def test_running_compaction_twice_leaves_one_digest_row(self) -> None:
+        for i in range(4):
+            self.alice.put("fact", f"f{i}", str(i))
+        self.alice.compact(keep=1)
+        self.alice.compact(keep=1)
+
+        self.assertEqual(self.alice.count("digest"), 1)
+
+    def test_an_archived_fact_can_be_brought_back(self) -> None:
+        self.alice.put("fact", "dau-11", "giảm 12%")
+        for i in range(3):
+            self.alice.put("fact", f"new{i}", str(i))
+        self.alice.compact(keep=1)
+
+        self.assertIsNone(self.alice.get("fact", "dau-11"))
+        self.assertTrue(self.alice.restore("fact", "dau-11"))
+        self.assertEqual(self.alice.get("fact", "dau-11"), "giảm 12%")
+        # only the restored key leaves the archive; the others are still there, by design
+        self.assertNotIn("dau-11", [r["key"] for r in self._archive("alice")])
+
+    def test_compaction_never_touches_another_scope(self) -> None:
+        for i in range(5):
+            self.alice.put("fact", f"a{i}", str(i))
+            self.bob.put("fact", f"b{i}", str(i))
+
+        self.alice.compact(keep=1)
+
+        self.assertEqual(self.bob.count("fact"), 5)
+        self.assertEqual(self._archive("bob"), [])
+
+    def test_a_scope_under_the_cap_is_left_alone(self) -> None:
+        for i in range(3):
+            self.alice.put("fact", f"f{i}", str(i))
+        report = self.alice.compact(keep=10)
+        self.assertEqual(report["kinds"][0]["archived"], 0)
+        self.assertEqual(self.alice.count("fact"), 3)
+
+    def test_compaction_refuses_to_be_deletion_in_disguise(self) -> None:
+        with self.assertRaises(mem.MemoryError):
+            self.alice.compact(keep=0)
+        with self.assertRaises(mem.MemoryError):
+            self.store.purge_archive(days=0)
 
     # -- the receipt -----------------------------------------------------------------------
     def _events(self) -> list[dict]:

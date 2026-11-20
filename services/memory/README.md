@@ -13,6 +13,14 @@ The design questions this service answers, in the order they matter:
 3. **What replaces what?** `(user_id, kind, key)` is unique. `put` returns `True` for a new fact
    and `False` for a replacement, so growth is a number, not a fear.
 4. **Where are the bytes?** `Memory.stats()` reports rows, body bytes and embedded rows per kind.
+5. **What happens when one person's working set gets large?** `Scoped.compact(keep=500)` moves the
+   least recently used rows to `memory_archive` and leaves one `digest` row saying how many moved,
+   how old, how new, and the first twenty keys. `Scoped.restore(kind, key)` brings one back.
+   Nothing is deleted except by `Memory.purge_archive(days=180)`, which is called on purpose and
+   reports how many rows it removed.
+
+The digest is JSON, not prose, on purpose: a model summary of forty facts is a new claim with no
+source, and the next turn only needs to know the facts exist and how to ask for one.
 
 Not here on purpose: extraction and summarisation. Those use a model, so they belong above this
 layer where they can be measured against a fixed set of questions.

@@ -18,3 +18,5 @@ and an answer is what makes the difference defensible out loud.
 No code was copied. The four vendor documents were read for *what problem they name*, and each row
 above says how this repo answers it differently. Where the answer is "not implemented", row 2 says
 so rather than implying parity.
+
+| 7 | A test is written to prove that guarding A will expose a fault in B | Not taken from anywhere; learned twice in this repo | The cache test for instant revocation exposed `/v1/respond` never applying the console's role at all; the "a tool result is a pointer, not a body" test then exposed a read that cut a UTF-8 character in half. Both tests were written for the stated behaviour and the second fault fell out of them. The rule is recorded because it changes what a test is for: not to cover a line, but to put pressure on the line next to it. |

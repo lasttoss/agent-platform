@@ -8,6 +8,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The memory service's tests are not "does pgvector work" -- they are "can Bob read Alice's
+    # rows", and skipping them on a machine without a database would report that as a pass. The
+    # service below is why `make test` runs the suite instead of skipping it.
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5544:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MEMORY_TEST_DSN: postgresql://postgres:ci@127.0.0.1:5544/postgres
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +36,9 @@ jobs:
           go-version: "1.23"
 
       - name: Python extras
-        run: python3 -m pip install --quiet -r services/ocr/requirements.txt
+        run: |
+          python3 -m pip install --quiet -r services/ocr/requirements.txt
+          python3 -m pip install --quiet -r services/memory/requirements-pg.txt
 
       # No apt here on purpose. poppler is the fast local path; on runners the Ubuntu mirror
       # has been unreachable (DNS inside the runner network) and `apt-get update` then hangs

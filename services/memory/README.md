@@ -1,0 +1,40 @@
+# memory
+
+One person's facts, stored where a `WHERE` clause can prove they are theirs.
+
+The design questions this service answers, in the order they matter:
+
+1. **Whose memory is this?** `Memory.scope(user_id)` is built from an identity you already trust.
+   There is no `search(user_id=...)` on the API, because a `user_id` argument is a value a model
+   can supply.
+2. **What stops it growing?** A row is a fact, not a conversation; a tool result is stored as a
+   pointer (`toolref.toolref`); every row may carry an expiry and reads ignore expired rows before
+   the cleaner runs; a body over 2 KB is refused by a CHECK constraint, not truncated.
+3. **What replaces what?** `(user_id, kind, key)` is unique. `put` returns `True` for a new fact
+   and `False` for a replacement, so growth is a number, not a fear.
+4. **Where are the bytes?** `Memory.stats()` reports rows, body bytes and embedded rows per kind.
+
+Not here on purpose: extraction and summarisation. Those use a model, so they belong above this
+layer where they can be measured against a fixed set of questions.
+
+## Running the tests
+
+The isolation test needs a real Postgres with pgvector; without one the suite skips, and the skip
+is visible.
+
+```bash
+docker run -d --rm --name mempg -e POSTGRES_PASSWORD=x -p 5544:5432 pgvector/pgvector:pg16
+uv venv /tmp/memvenv && uv pip install --python /tmp/memvenv/bin/python "psycopg[binary]"
+MEMORY_TEST_DSN=postgresql://postgres:x@127.0.0.1:5544/postgres \
+  /tmp/memvenv/bin/python -m unittest discover -s services/memory/tests -v
+```
+
+Remove the `WHERE user_id = %s` from `get()` and `search()` and the first test fails with
+`'vụ dâu tháng 11 giảm 12%' is not None` — that is the intended red.
+
+## Configuration
+
+| variable | meaning |
+|---|---|
+| `MEMORY_DSN` | Postgres connection string (the service refuses to start without one) |
+| `MEMORY_DIM` | vector width, default 1536; must match the embedding model |

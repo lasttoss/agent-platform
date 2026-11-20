@@ -17,7 +17,9 @@ x-python: &python
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector build of the same major version: the memory service needs one extension and
+    # nothing else, so there is no reason to run a second database.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
       POSTGRES_DB: ${POSTGRES_DB:-agent}

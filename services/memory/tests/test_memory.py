@@ -30,7 +30,10 @@ DIM = 8                          # small enough for hand-written vectors, same c
 def make_store() -> "mem.Memory":
     store = mem.Memory(DSN, dim=DIM)
     with store._conn() as conn:
+        # Both tables: an audit row from a previous test would otherwise make a later test pass
+        # or fail for a reason that has nothing to do with what it is checking.
         conn.execute("DROP TABLE IF EXISTS memory CASCADE")
+        conn.execute("DROP TABLE IF EXISTS memory_event CASCADE")
     store.create_schema()
     return store
 
@@ -141,6 +144,46 @@ class MemoryTests(unittest.TestCase):
 
         self.assertEqual([h.key for h in self.alice.search(vec, kind="fact")], ["note"])
         self.assertEqual(self.alice.search(vec, kind="pref"), [])
+
+    # -- the receipt -----------------------------------------------------------------------
+    def _events(self) -> list[dict]:
+        with self.store._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT actor_id, subject_id, op, rows FROM memory_event ORDER BY id"
+            ).fetchall()]
+
+    def test_reading_your_own_memory_leaves_a_receipt(self) -> None:
+        """Traffic per person is a number; a read that leaves no trace is an assumption."""
+        self.alice.put("fact", "a", "x", embedding=[1, 0, 0, 0, 0, 0, 0, 0])
+        self.alice.get("fact", "a")
+        self.alice.search([1, 0, 0, 0, 0, 0, 0, 0])
+
+        events = [(e["actor_id"], e["op"], e["rows"]) for e in self._events()]
+        self.assertIn(("alice", "get", 1), events)
+        self.assertIn(("alice", "search", 1), events)
+
+    def test_support_reading_someone_elses_memory_is_attributed_to_the_reader(self) -> None:
+        """The read that needs a name later is the one where actor and subject differ."""
+        self.bob.put("fact", "b", "bob's")
+        self.alice.put("fact", "a", "alice's")
+
+        report = self.alice and self.store.inspect("support-7", "bob")
+
+        self.assertEqual(report["subject_id"], "bob")
+        self.assertEqual(report["kinds"][0]["rows"], 1)
+        cross = [e for e in self._events() if e["actor_id"] != e["subject_id"]]
+        self.assertEqual([(e["actor_id"], e["subject_id"], e["op"]) for e in cross],
+                         [("support-7", "bob", "inspect")])
+        # shape, not content: the report never carries a body
+        self.assertNotIn("body", str(report))
+
+    def test_a_deletion_is_recorded(self) -> None:
+        self.alice.put("fact", "a", "x")
+        self.alice.forget(kind="fact")
+
+        forgets = [e for e in self._events() if e["op"] == "forget"]
+        self.assertEqual(len(forgets), 1)
+        self.assertEqual(forgets[0]["rows"], 1)
 
     # -- the number someone will ask for ----------------------------------------------------
     def test_stats_names_where_the_bytes_are(self) -> None:

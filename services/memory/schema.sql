@@ -30,3 +30,23 @@ CREATE TABLE IF NOT EXISTS memory (
 CREATE INDEX IF NOT EXISTS memory_scope_idx ON memory (user_id, kind, updated_at DESC);
 CREATE INDEX IF NOT EXISTS memory_expiry_idx ON memory (expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS memory_embedding_idx ON memory USING hnsw (embedding halfvec_cosine_ops);
+
+-- Reading memory is itself an event. Two people can read the same row for very different
+-- reasons -- the owner asking about their own crop, and support asking why the owner got that
+-- answer -- and only the second one deserves a question later. Logging both, with `actor_id`
+-- next to `subject_id`, is what makes the difference visible instead of assumed.
+--
+-- No content, no body, no query text: an audit table that is interesting to read is a second copy
+-- of the data it audits.
+CREATE TABLE IF NOT EXISTS memory_event (
+    id         bigserial   PRIMARY KEY,
+    at         timestamptz NOT NULL DEFAULT now(),
+    actor_id   text        NOT NULL,   -- who looked
+    subject_id text        NOT NULL,   -- whose memory
+    op         text        NOT NULL,   -- get | search | inspect
+    rows       integer     NOT NULL,
+    run_id     text
+);
+CREATE INDEX IF NOT EXISTS memory_event_subject_idx ON memory_event (subject_id, at DESC);
+CREATE INDEX IF NOT EXISTS memory_event_cross_idx
+    ON memory_event (at DESC) WHERE actor_id <> subject_id;

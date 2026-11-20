@@ -109,7 +109,7 @@ class Scoped:
             ).fetchone()
         return bool(row["inserted"])
 
-    def get(self, kind: str, key: str) -> str | None:
+    def get(self, kind: str, key: str, run_id: str | None = None) -> str | None:
         with self._store._conn() as conn:          # type: ignore[attr-defined]
             row = conn.execute(
                 """
@@ -119,6 +119,7 @@ class Scoped:
                 """,
                 (self.user_id, kind, key),
             ).fetchone()
+            self._store._record(conn, self.user_id, self.user_id, "get", 0 if row is None else 1, run_id)
         return row["body"] if row else None
 
     def search(
@@ -126,6 +127,7 @@ class Scoped:
         embedding: Sequence[float],
         k: int = 5,
         kind: str | None = None,
+        run_id: str | None = None,
     ) -> list[Hit]:
         vec = _vector(embedding)
         with self._store._conn() as conn:          # type: ignore[attr-defined]
@@ -142,6 +144,7 @@ class Scoped:
                 """,
                 (vec, self.user_id, kind, kind, vec, int(k)),
             ).fetchall()
+            self._store._record(conn, self.user_id, self.user_id, "search", len(rows), run_id)
         return [Hit(r["kind"], r["key"], r["body"], float(r["score"])) for r in rows]
 
     def forget(self, kind: str | None = None, key: str | None = None) -> int:
@@ -155,7 +158,11 @@ class Scoped:
             sql += " AND key = %s"
             args.append(key)
         with self._store._conn() as conn:          # type: ignore[attr-defined]
-            return conn.execute(sql, tuple(args)).rowcount or 0
+            deleted = conn.execute(sql, tuple(args)).rowcount or 0
+            # A deletion is the one write that cannot be undone by reading again, so it gets a
+            # receipt even when nobody asked for one.
+            self._store._record(conn, self.user_id, self.user_id, "forget", deleted)
+            return deleted
 
     def count(self, kind: str | None = None) -> int:
         sql = "SELECT count(*) AS n FROM memory WHERE user_id = %s"
@@ -194,8 +201,37 @@ class Memory:
             conn.execute(sql)
 
     # -- public API ------------------------------------------------------------------------
+    def _record(self, conn, actor_id: str, subject_id: str, op: str, rows: int,
+                run_id: str | None = None) -> None:
+        """One row per read. Written in the same transaction as the read, so a read cannot happen
+        without its receipt."""
+        conn.execute(
+            "INSERT INTO memory_event (actor_id, subject_id, op, rows, run_id)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (actor_id, subject_id, op, int(rows), run_id),
+        )
+
     def scope(self, user_id: str) -> Scoped:
         return Scoped(self, user_id)
+
+    def inspect(self, actor_id: str, subject_id: str) -> dict:
+        """Support looking at somebody else's memory, and leaving a name behind.
+
+        This is the read that has to exist -- "why did this person get that answer" is a real
+        question -- and the one that has to be attributable. It returns shape, not content:
+        per-kind counts and the newest timestamps, never a body."""
+        if not actor_id or not subject_id:
+            raise MemoryError("an inspection names both who looked and whose memory it was")
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT kind, count(*) AS rows, max(updated_at) AS newest
+                  FROM memory WHERE user_id = %s GROUP BY kind ORDER BY rows DESC
+                """,
+                (subject_id,),
+            ).fetchall()
+            self._record(conn, actor_id, subject_id, "inspect", sum(r["rows"] for r in rows))
+        return {"subject_id": subject_id, "kinds": [dict(r) for r in rows]}
 
     def sweep(self) -> int:
         """Delete rows whose expiry has passed. Called by a job, never on the request path."""

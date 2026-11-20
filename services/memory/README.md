@@ -32,6 +32,22 @@ MEMORY_TEST_DSN=postgresql://postgres:x@127.0.0.1:5544/postgres \
 Remove the `WHERE user_id = %s` from `get()` and `search()` and the first test fails with
 `'vụ dâu tháng 11 giảm 12%' is not None` — that is the intended red.
 
+## Reading the store
+
+Reads leave a receipt: `memory_event` holds one row per read with `actor_id` next to
+`subject_id`, no content. `Memory.inspect(actor, subject)` is the support path -- it returns
+per-kind counts for somebody else and records itself as a cross-user read, which is the read that
+needs a name later.
+
+```bash
+MEMORY_DSN=... python3 scripts/memory-report.py
+```
+
+Prints table sizes, rows and body bytes per kind, a one-year projection, reads in the last day,
+cross-user reads in the last 30 days, and rows expiring this week. It exits non-zero when a kind
+passes `MEMORY_ROW_BUDGET` (200k rows), the projection passes `MEMORY_BYTES_BUDGET` (4 GB), or a
+cross-user read happened in the last day -- so it works as a cron check, not a report nobody reads.
+
 ## Configuration
 
 | variable | meaning |
